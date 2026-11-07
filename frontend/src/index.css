@@ -1,0 +1,299 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Sora", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-abyss-950: #0f1118;
+  --color-abyss-900: #12141c;
+  --color-abyss-850: #181b24;
+  --color-abyss-800: #1e222b;
+  --color-abyss-750: #262b35;
+  --color-abyss-700: #333a47;
+
+  --color-ember-200: #ffcdbb;
+  --color-ember-300: #ff9d7d;
+  --color-ember-400: #ff7043;
+  --color-ember-500: #ff5722;
+  --color-ember-600: #e64a19;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--font-sans);
+    color: #e6e8ef;
+    background-color: #12141c;
+    background-image:
+      radial-gradient(1100px 680px at 12% -12%, rgba(255, 87, 34, 0.1), transparent 60%),
+      radial-gradient(900px 620px at 100% 0%, rgba(120, 140, 175, 0.08), transparent 58%),
+      radial-gradient(900px 700px at 55% 120%, rgba(255, 112, 67, 0.045), transparent 62%);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: rgba(255, 87, 34, 0.35);
+    color: #ffffff;
+  }
+
+  ::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 87, 34, 0.45);
+  }
+
+  button {
+    cursor: pointer;
+  }
+}
+
+@layer components {
+  .panel {
+    position: relative;
+    border-radius: 1.25rem;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: linear-gradient(180deg, rgba(30, 34, 43, 0.9) 0%, rgba(24, 27, 36, 0.96) 100%);
+    box-shadow:
+      0 30px 80px -55px rgba(0, 0, 0, 0.9),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(16px);
+  }
+}
+
+@layer utilities {
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+    background-size: 46px 46px;
+    mask-image: radial-gradient(ellipse 90% 65% at 50% 0%, black 25%, transparent 78%);
+  }
+
+  .text-gradient-ember {
+    background: linear-gradient(120deg, #ffcdbb 0%, #ff7043 45%, #ff5722 100%);
+    background-clip: text;
+    color: transparent;
+  }
+
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.14);
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 87, 34, 0.45);
+  }
+
+  .text-shadow-cinema {
+    text-shadow:
+      0 2px 18px rgba(0, 0, 0, 0.9),
+      0 1px 3px rgba(0, 0, 0, 0.85);
+  }
+}
+
+@keyframes bot-blink {
+  0%,
+  91%,
+  100% {
+    transform: scaleY(1);
+  }
+  94%,
+  96% {
+    transform: scaleY(0.08);
+  }
+}
+
+@keyframes bot-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes soft-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes wave {
+  0%,
+  100% {
+    height: 28%;
+  }
+  50% {
+    height: 100%;
+  }
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scene-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes professor-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.bot-float {
+  animation: bot-float 6s ease-in-out infinite;
+}
+
+.bot-eye {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bot-blink 5.8s ease-in-out infinite;
+}
+
+.status-pulse {
+  animation: soft-pulse 2.4s ease-in-out infinite;
+}
+
+.wave-bar {
+  height: 40%;
+  animation: wave 1.1s ease-in-out infinite;
+}
+
+.panel-in {
+  animation: panel-in 0.32s ease-out both;
+}
+
+.scene-progress {
+  transform-origin: left;
+  animation-name: scene-progress;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+.professor-in {
+  animation: professor-in 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bot-float,
+  .bot-eye,
+  .status-pulse,
+  .wave-bar,
+  .panel-in,
+  .professor-in {
+    animation: none;
+  }
+
+  .scene-progress {
+    animation: none;
+    transform: scaleX(1);
+  }
+}
+
+/* Float the professor only when the viewport is wide and tall enough that it
+   cannot cover lesson copy; otherwise it docks below the player. */
+@media (min-width: 1440px) and (min-height: 900px) {
+  .professor-float {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    width: 21rem;
+    max-width: none;
+    margin-top: 0;
+  }
+
+  .professor-float .professor-shell {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 0 0.75rem 0.75rem;
+    backdrop-filter: none;
+  }
+
+  .professor-float .professor-layout {
+    display: block;
+  }
+
+  .professor-float .professor-stage {
+    width: 100%;
+    height: 18.5rem;
+    margin-inline: auto;
+  }
+
+  .professor-float .professor-dock {
+    margin-top: 0.5rem;
+    border-radius: 1rem;
+  }
+
+  .captions-clear-professor {
+    padding-left: 14rem;
+  }
+
+  .code-footer-label {
+    padding-left: 14rem;
+  }
+}

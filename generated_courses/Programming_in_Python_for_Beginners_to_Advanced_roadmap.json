@@ -1,0 +1,290 @@
+{
+  "course_title": "Programming in Python for Beginners to Advanced",
+  "target_audience": "Beginners with zero coding experience who want to become professional Python developers.",
+  "sections": [
+    {
+      "section_id": 1,
+      "section_title": "Foundations of Python Programming",
+      "description": "Introduction to programming concepts, setting up the environment, and learning basic syntax and data types.",
+      "steps": [
+        {
+          "step_id": "1.1",
+          "step_title": "Introduction to Programming and Python",
+          "duration_mins": 30,
+          "learning_objectives": [
+            "Understand what programming is",
+            "Learn the history and use cases of Python",
+            "Install Python and set up an IDE"
+          ]
+        },
+        {
+          "step_id": "1.2",
+          "step_title": "Variables and Basic Data Types",
+          "duration_mins": 45,
+          "learning_objectives": [
+            "Define and use variables",
+            "Understand integers, floats, strings, and booleans",
+            "Use type casting functions"
+          ]
+        },
+        {
+          "step_id": "1.3",
+          "step_title": "Operators and Expressions",
+          "duration_mins": 40,
+          "learning_objectives": [
+            "Use arithmetic operators",
+            "Apply comparison and logical operators",
+            "Understand operator precedence"
+          ]
+        },
+        {
+          "step_id": "1.4",
+          "step_title": "Basic Input and Output",
+          "duration_mins": 30,
+          "learning_objectives": [
+            "Use the print() function effectively",
+            "Take user input using input()",
+            "Format strings using f-strings"
+          ]
+        },
+        {
+          "step_id": "1.5",
+          "step_title": "Section 1 Capstone: Simple Calculator",
+          "duration_mins": 60,
+          "learning_objectives": [
+            "Combine variables, inputs, and operators",
+            "Build a functioning command-line basic calculator"
+          ]
+        }
+      ]
+    },
+    {
+      "section_id": 2,
+      "section_title": "Control Flow and Data Structures",
+      "description": "Mastering conditional statements, loops, and built-in Python data structures like lists, dictionaries, tuples, and sets.",
+      "steps": [
+        {
+          "step_id": "2.1",
+          "step_title": "Conditional Statements (if, elif, else)",
+          "duration_mins": 45,
+          "learning_objectives": [
+            "Write simple if statements",
+            "Handle multiple conditions with elif",
+            "Implement nested conditional logic"
+          ]
+        },
+        {
+          "step_id": "2.2",
+          "step_title": "Loops (while and for)",
+          "duration_mins": 50,
+          "learning_objectives": [
+            "Understand iteration with while loops",
+            "Iterate over sequences using for loops",
+            "Use break, continue, and pass statements"
+          ]
+        },
+        {
+          "step_id": "2.3",
+          "step_title": "Lists and Tuples",
+          "duration_mins": 60,
+          "learning_objectives": [
+            "Create and manipulate lists",
+            "Understand list slicing and methods",
+            "Differentiate between mutable lists and immutable tuples"
+          ]
+        },
+        {
+          "step_id": "2.4",
+          "step_title": "Dictionaries and Sets",
+          "duration_mins": 60,
+          "learning_objectives": [
+            "Work with key-value pairs in dictionaries",
+            "Perform set operations (union, intersection)",
+            "Choose the right data structure for specific problems"
+          ]
+        },
+        {
+          "step_id": "2.5",
+          "step_title": "Section 2 Capstone: To-Do List Application",
+          "duration_mins": 75,
+          "learning_objectives": [
+            "Use loops and conditionals together",
+            "Manage data storage using lists and dictionaries",
+            "Build a text-based task manager"
+          ]
+        }
+      ]
+    },
+    {
+      "section_id": 3,
+      "section_title": "Functions and Modular Programming",
+      "description": "Learning how to write reusable code using functions, scope, modules, and error handling.",
+      "steps": [
+        {
+          "step_id": "3.1",
+          "step_title": "Defining and Calling Functions",
+          "duration_mins": 45,
+          "learning_objectives": [
+            "Write custom functions with def",
+            "Pass arguments and return values",
+            "Use default and keyword arguments"
+          ]
+        },
+        {
+          "step_id": "3.2",
+          "step_title": "Scope and Lifetime of Variables",
+          "duration_mins": 40,
+          "learning_objectives": [
+            "Understand local vs. global scope",
+            "Use the global keyword responsibly",
+            "Avoid common variable shadowing bugs"
+          ]
+        },
+        {
+          "step_id": "3.3",
+          "step_title": "Lambda Functions and Higher-Order Functions",
+          "duration_mins": 50,
+          "learning_objectives": [
+            "Write anonymous functions using lambda",
+            "Use map, filter, and reduce functions",
+            "Pass functions as arguments"
+          ]
+        },
+        {
+          "step_id": "3.4",
+          "step_title": "Modules and Packages",
+          "duration_mins": 45,
+          "learning_objectives": [
+            "Import built-in and custom modules",
+            "Organize code into multiple files",
+            "Explore the Python Standard Library"
+          ]
+        },
+        {
+          "step_id": "3.5",
+          "step_title": "Error and Exception Handling",
+          "duration_mins": 50,
+          "learning_objectives": [
+            "Identify syntax errors vs. exceptions",
+            "Use try, except, else, and finally blocks",
+            "Raise custom exceptions"
+          ]
+        }
+      ]
+    },
+    {
+      "section_id": 4,
+      "section_title": "Object-Oriented Programming (OOP)",
+      "description": "Mastering classes, objects, inheritance, polymorphism, and advanced OOP principles in Python.",
+      "steps": [
+        {
+          "step_id": "4.1",
+          "step_title": "Introduction to Classes and Objects",
+          "duration_mins": 60,
+          "learning_objectives": [
+            "Understand the OOP paradigm",
+            "Define classes and instantiate objects",
+            "Use the __init__ constructor method"
+          ]
+        },
+        {
+          "step_id": "4.2",
+          "step_title": "Instance Methods and Attributes",
+          "duration_mins": 50,
+          "learning_objectives": [
+            "Define and use self",
+            "Manage instance attributes and methods",
+            "Differentiate between class and instance variables"
+          ]
+        },
+        {
+          "step_id": "4.3",
+          "step_title": "Inheritance and Method Overriding",
+          "duration_mins": 60,
+          "learning_objectives": [
+            "Create parent and child classes",
+            "Use the super() function",
+            "Override methods for specialized behavior"
+          ]
+        },
+        {
+          "step_id": "4.4",
+          "step_title": "Encapsulation and Polymorphism",
+          "duration_mins": 55,
+          "learning_objectives": [
+            "Implement public, private, and protected members",
+            "Use getters and setters (property decorators)",
+            "Apply polymorphism in code design"
+          ]
+        },
+        {
+          "step_id": "4.5",
+          "step_title": "Section 4 Capstone: Bank Account System",
+          "duration_mins": 90,
+          "learning_objectives": [
+            "Design a multi-class system using inheritance",
+            "Apply encapsulation for security",
+            "Build a comprehensive banking simulation"
+          ]
+        }
+      ]
+    },
+    {
+      "section_id": 5,
+      "section_title": "Advanced Python Concepts",
+      "description": "Exploring advanced features like decorators, generators, iterators, and working with files.",
+      "steps": [
+        {
+          "step_id": "5.1",
+          "step_title": "File I/O and Context Managers",
+          "duration_mins": 50,
+          "learning_objectives": [
+            "Read from and write to text and CSV files",
+            "Use the with statement for safe file handling",
+            "Manage file paths using pathlib"
+          ]
+        },
+        {
+          "step_id": "5.2",
+          "step_title": "Iterators and Generators",
+          "duration_mins": 60,
+          "learning_objectives": [
+            "Understand the iterator protocol",
+            "Create memory-efficient functions using yield",
+            "Compare lists with generator expressions"
+          ]
+        },
+        {
+          "step_id": "5.3",
+          "step_title": "Decorators",
+          "duration_mins": 60,
+          "learning_objectives": [
+            "Understand functions as first-class objects",
+            "Write custom function decorators",
+            "Use functools.wraps for metadata preservation"
+          ]
+        },
+        {
+          "step_id": "5.4",
+          "step_title": "Advanced Comprehensions",
+          "duration_mins": 40,
+          "learning_objectives": [
+            "Write advanced list, dictionary, and set comprehensions",
+            "Apply conditions inside comprehensions",
+            "Refactor loops into clean comprehension statements"
+          ]
+        },
+        {
+          "step_id": "5.5",
+          "step_title": "Final Capstone: CLI Data Analysis Tool",
+          "duration_mins": 120,
+          "learning_objectives": [
+            "Combine all advanced concepts learned",
+            "Process external files using generators and decorators",
+            "Build a robust, production-ready Python tool"
+          ]
+        }
+      ]
+    }
+  ]
+}

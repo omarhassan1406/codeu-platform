@@ -1,0 +1,131 @@
+{
+  "course_title": "Advanced Flutter State Management & Clean Architecture",
+  "target_audience": "Intermediate to Advanced Flutter Developers",
+  "sections": [
+    {
+      "section_id": 1,
+      "section_title": "Foundations of State Management",
+      "description": "Understanding the core concepts of state, declarative UI, and comparing traditional approaches.",
+      "steps": [
+        {
+          "step_id": "1.1",
+          "step_title": "Introduction to State and Declarative UI",
+          "duration_mins": 30,
+          "learning_objectives": [
+            "Define state in the context of Flutter",
+            "Understand declarative vs imperative UI paradigms"
+          ]
+        },
+        {
+          "step_id": "1.2",
+          "step_title": "InheritedWidget Deep Dive",
+          "duration_mins": 45,
+          "learning_objectives": [
+            "Master the underlying mechanism of InheritedWidget",
+            "Build a custom lightweight state container"
+          ]
+        }
+      ]
+    },
+    {
+      "section_id": 2,
+      "section_title": "Advanced BLoC and Cubit Patterns",
+      "description": "Mastering the BLoC library for scalable and testable applications.",
+      "steps": [
+        {
+          "step_id": "2.1",
+          "step_title": "BLoC vs Cubit Architecture",
+          "duration_mins": 40,
+          "learning_objectives": [
+            "Understand when to use Cubit vs BLoC",
+            "Implement event-driven state transitions"
+          ]
+        },
+        {
+          "step_id": "2.2",
+          "step_title": "Handling Complex Asynchronous Operations",
+          "duration_mins": 60,
+          "learning_objectives": [
+            "Manage debouncing, throttling, and concurrent requests",
+            "Handle errors and network failures gracefully"
+          ]
+        }
+      ]
+    },
+    {
+      "section_id": 3,
+      "section_title": "Riverpod Mastery",
+      "description": "Leveraging Riverpod for compile-safe and dependency-injection-friendly state management.",
+      "steps": [
+        {
+          "step_id": "3.1",
+          "step_title": "Riverpod Providers Overview",
+          "duration_mins": 50,
+          "learning_objectives": [
+            "Explore Provider, StateProvider, and StateNotifierProvider",
+            "Understand auto-dispose and family modifiers"
+          ]
+        },
+        {
+          "step_id": "3.2",
+          "step_title": "Asynchronous State with AsyncValue",
+          "duration_mins": 45,
+          "learning_objectives": [
+            "Handle loading, error, and data states declaratively",
+            "Implement pull-to-refresh and pagination"
+          ]
+        }
+      ]
+    },
+    {
+      "section_id": 4,
+      "section_title": "Clean Architecture in Flutter",
+      "description": "Structuring large-scale applications using Clean Architecture principles.",
+      "steps": [
+        {
+          "step_id": "4.1",
+          "step_title": "Layers of Clean Architecture",
+          "duration_mins": 60,
+          "learning_objectives": [
+            "Understand Domain, Data, and Presentation layers",
+            "Enforce dependency rule boundaries"
+          ]
+        },
+        {
+          "step_id": "4.2",
+          "step_title": "Repositories, UseCases, and Entities",
+          "duration_mins": 75,
+          "learning_objectives": [
+            "Implement business logic inside UseCases",
+            "Design robust Entity and Data Model mappings"
+          ]
+        }
+      ]
+    },
+    {
+      "section_id": 5,
+      "section_title": "Testing and Production Readiness",
+      "description": "Ensuring code quality through comprehensive testing and robust error handling.",
+      "steps": [
+        {
+          "step_id": "5.1",
+          "step_title": "Unit and Widget Testing BLoC/Riverpod",
+          "duration_mins": 60,
+          "learning_objectives": [
+            "Write unit tests for Cubits and UseCases using Mocktail",
+            "Test widget reactivity and state changes"
+          ]
+        },
+        {
+          "step_id": "5.2",
+          "step_title": "Dependency Injection and Error Boundaries",
+          "duration_mins": 50,
+          "learning_objectives": [
+            "Configure GetIt for service location",
+            "Implement global error handling and logging"
+          ]
+        }
+      ]
+    }
+  ]
+}
