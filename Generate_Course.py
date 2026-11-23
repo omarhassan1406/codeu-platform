@@ -318,7 +318,16 @@ def _write_json(path, data) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def run_codeu_complete_pipeline(course_topic: str, output_dir: str = OUTPUT_DIR):
+def run_codeu_complete_pipeline(
+    course_topic: str,
+    output_dir: str = OUTPUT_DIR,
+    on_progress: Callable[[dict], None] | None = None,
+):
+    """Generate, save and ingest a full course.
+
+    ``on_progress`` (optional) receives a copy of the manifest plus ``course_id``
+    every time the manifest is saved, so callers can track progress.
+    """
     ensure_collection()
 
     # الخطوة 1: توليد الهيكل (مع فحص الاكتمال)
@@ -345,6 +354,13 @@ def run_codeu_complete_pipeline(course_topic: str, output_dir: str = OUTPUT_DIR)
     def save_manifest() -> None:
         manifest["updated_at"] = datetime.now(timezone.utc).isoformat()
         _write_json(target_dir / MANIFEST_FILENAME, manifest)
+        if on_progress is not None:
+            update = {**manifest, "completed_steps": list(manifest["completed_steps"])}
+            update["course_id"] = target_dir.name
+            try:
+                on_progress(update)
+            except Exception:
+                logging.getLogger(__name__).exception("Progress callback failed")
 
     save_manifest()
     current = 0

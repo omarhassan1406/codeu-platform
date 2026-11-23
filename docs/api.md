@@ -35,9 +35,38 @@ Errors: `404` with `{"detail": "Course not found"}` or `{"detail": "Lesson not f
 
 ## Course generation
 
-`POST /courses/generate` with `{"course_topic": "..."}` returns `202` and starts
-generation in the background. Poll `GET /courses?status=in_progress` or the
-course detail to follow progress. A dedicated job-status endpoint is planned.
+`POST /courses/generate` with `{"course_topic": "..."}` returns `202` with a
+`job_id` and starts generation in the background.
+
+`GET /courses/jobs/{job_id}` returns a `GenerationJob`:
+
+```json
+{
+  "job_id": "3f2c…", "course_topic": "Calculus for Beginners",
+  "status": "running", "course_id": "Calculus_for_Beginners",
+  "course_title": "Calculus for Beginners",
+  "total_steps": 12, "completed_steps": 4, "error": null,
+  "created_at": "…", "updated_at": "…"
+}
+```
+
+- `status`: `queued`, `running`, `complete` or `failed`. Poll every few
+  seconds until it is `complete` or `failed`.
+- `course_id` is set once the roadmap exists; open it with `GET /courses/{course_id}`.
+- `error` is a learner-safe message. Details stay in the server log.
+- `404` with `{"detail": "Job not found"}`: jobs live in server memory, so a
+  restart forgets them. The course folder's `manifest.json` still records progress.
+
+## Re-ingesting courses
+
+`reingest_courses.py` re-chunks saved lessons with the configured chunker and
+replaces each lesson's Qdrant points (delete by course + step, then upsert with
+deterministic IDs). Run with `--dry-run` first to see chunk counts.
+
+```
+.venv\Scripts\python reingest_courses.py --dry-run
+.venv\Scripts\python reingest_courses.py --course Programming_in_Python_for_Beginners_to_Advanced
+```
 
 ## Onboarding suggestions
 

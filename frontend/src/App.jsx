@@ -1,65 +1,129 @@
-import { useState } from 'react'
-import CurriculumSidebar from './components/CurriculumSidebar'
-import FloatingProfessor from './components/FloatingProfessor'
+import { useCallback, useState } from 'react'
+import Classroom from './components/Classroom'
 import Header from './components/Header'
-import SmartPlayer from './components/SmartPlayer'
-import { COURSES, resolveLesson } from './data/courses'
+import GenerationProgress from './components/onboarding/GenerationProgress'
+import OnboardingFlow from './components/onboarding/OnboardingFlow'
+import SuggestionsView from './components/onboarding/SuggestionsView'
+import { api } from './lib/api'
+import { loadJSON, saveJSON } from './lib/storage'
 
+// Views: onboarding (questions) -> suggestions -> generating | classroom.
+// Returning learners with a saved profile land straight in the classroom.
 export default function App() {
-  const [selectedCourseId, setSelectedCourseId] = useState(COURSES[0].id)
-  const [selectedLessonId, setSelectedLessonId] = useState(COURSES[0].lesson.id)
-  const [avatarStatus, setAvatarStatus] = useState('idle')
+  const [profile, setProfile] = useState(() => loadJSON('profile'))
+  const [view, setView] = useState(() => (loadJSON('profile') ? 'classroom' : 'onboarding'))
+  const [suggestions, setSuggestions] = useState(null)
+  const [suggestError, setSuggestError] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [courseId, setCourseId] = useState(() => loadJSON('course'))
+  const [job, setJob] = useState(() => loadJSON('job'))
+  const [generateError, setGenerateError] = useState(null)
+  const [generating, setGenerating] = useState(false)
 
-  const course = COURSES.find((item) => item.id === selectedCourseId) ?? COURSES[0]
-  const lesson = resolveLesson(course, selectedLessonId)
-
-  const handleSelectCourse = (courseId) => {
-    const nextCourse = COURSES.find((item) => item.id === courseId)
-    if (!nextCourse) return
-    setSelectedCourseId(courseId)
-    setSelectedLessonId(nextCourse.lesson.id)
-    setAvatarStatus('idle')
+  const fetchSuggestions = async (nextProfile) => {
+    setSubmitting(true)
+    setSuggestError(null)
+    try {
+      const result = await api.suggest(nextProfile)
+      setSuggestions(result.suggestions)
+      setProfile(nextProfile)
+      saveJSON('profile', nextProfile)
+      setView('suggestions')
+    } catch (error) {
+      setSuggestError(error.message)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
-  const handleSelectLesson = (lessonId) => {
-    setSelectedLessonId(lessonId)
-    setAvatarStatus('idle')
+  const changeCourse = useCallback((id) => {
+    setCourseId(id)
+    saveJSON('course', id)
+  }, [])
+
+  const openCourse = (id) => {
+    changeCourse(id)
+    setView('classroom')
+  }
+
+  const generate = async (topic) => {
+    setGenerating(true)
+    setGenerateError(null)
+    try {
+      const result = await api.generateCourse(topic)
+      const nextJob = { jobId: result.job_id, topic: result.course_topic }
+      setJob(nextJob)
+      saveJSON('job', nextJob)
+      setView('generating')
+    } catch (error) {
+      setGenerateError(error.message)
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const navigate = (target) => {
+    if (target === 'suggestions' && (!suggestions || !profile)) {
+      if (profile) fetchSuggestions(profile)
+      else setView('onboarding')
+      return
+    }
+    setView(target)
+  }
+
+  const leaveGeneration = (finished) => {
+    if (finished) {
+      setJob(null)
+      saveJSON('job', null)
+    }
+  }
+
+  if (view === 'onboarding') {
+    return (
+      <OnboardingFlow
+        initialProfile={profile}
+        onSubmit={fetchSuggestions}
+        onSkip={profile ? () => setView('classroom') : undefined}
+        submitting={submitting}
+        error={suggestError}
+      />
+    )
   }
 
   return (
-    <div className="min-h-screen">
-      <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-0 bg-grid opacity-40" />
+    <div className="flex min-h-screen flex-col">
+      <Header view={view} onNavigate={navigate} pendingJob={job} onOpenJob={() => setView('generating')} />
 
-      <div className="relative z-10 flex min-h-screen flex-col">
-        <Header />
+      {view === 'suggestions' && suggestions && (
+        <SuggestionsView
+          suggestions={suggestions}
+          onOpen={openCourse}
+          onGenerate={generate}
+          onEditProfile={() => setView('onboarding')}
+          generateError={generateError}
+          busy={generating}
+        />
+      )}
 
-        <main id="classroom" className="mx-auto w-full max-w-[1920px] flex-1">
-          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px]">
-            <section className="min-w-0 px-4 pb-10 pt-4 sm:px-5 sm:pt-5 lg:px-6">
-              <SmartPlayer
-                key={lesson.id}
-                lesson={lesson}
-                courseTitle={course.title}
-                status={avatarStatus}
-              />
+      {view === 'generating' && job && (
+        <GenerationProgress
+          key={job.jobId}
+          jobId={job.jobId}
+          topic={job.topic}
+          onOpen={(id) => {
+            leaveGeneration(true)
+            openCourse(id)
+          }}
+          onBack={(finished) => {
+            leaveGeneration(finished)
+            navigate('suggestions')
+          }}
+        />
+      )}
 
-              <FloatingProfessor status={avatarStatus} onStatusChange={setAvatarStatus} />
-            </section>
-
-            <div className="order-2 mx-4 mb-8 xl:m-0 xl:border-l xl:border-white/[0.06] xl:bg-abyss-850">
-              <CurriculumSidebar
-                key={course.id}
-                courses={COURSES}
-                course={course}
-                selectedLessonId={lesson.id}
-                onSelectCourse={handleSelectCourse}
-                onSelectLesson={handleSelectLesson}
-                className="xl:sticky xl:top-[73px] xl:h-[calc(100vh-73px)] xl:rounded-none xl:border-0 xl:bg-none xl:bg-transparent xl:shadow-none xl:backdrop-blur-none"
-              />
-            </div>
-          </div>
-        </main>
-      </div>
+      {view === 'classroom' && (
+        <Classroom courseId={courseId} onCourseChange={changeCourse} onFindCourses={() => navigate('suggestions')} />
+      )}
     </div>
   )
 }

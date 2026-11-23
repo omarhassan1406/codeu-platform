@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { flattenLessons } from '../data/courses'
 
 function ChevronIcon({ open }) {
   return (
@@ -8,16 +7,17 @@ function ChevronIcon({ open }) {
       fill="none"
       stroke="currentColor"
       strokeWidth="2"
-      className={`h-3.5 w-3.5 shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
+      aria-hidden="true"
+      className={`h-4 w-4 shrink-0 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
     >
-      <path d="m9 5 7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m6 9 6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }
 
 function CheckIcon() {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" className="h-3 w-3">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" aria-hidden="true" className="h-3 w-3">
       <path d="m5 12 4.5 4.5L19 7" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
@@ -25,7 +25,7 @@ function CheckIcon() {
 
 function PlayIcon() {
   return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className="h-2.5 w-2.5">
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="h-2.5 w-2.5">
       <path d="M8 5.5v13l11-6.5-11-6.5Z" />
     </svg>
   )
@@ -38,191 +38,166 @@ function SelectChevron() {
       fill="none"
       stroke="currentColor"
       strokeWidth="2"
-      className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500"
+      aria-hidden="true"
+      className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
     >
       <path d="m6 9 6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }
 
-function LessonStatus({ active, completed, index }) {
+const formatMinutes = (mins) => (mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} min`)
+
+function LessonMarker({ active, done }) {
   if (active) {
     return (
-      <span className="relative grid h-6 w-6 shrink-0 place-items-center rounded-full bg-ember-500/15 text-ember-300 ring-1 ring-ember-500/35">
-        <span className="absolute inset-0 rounded-full bg-ember-500/10 status-pulse" />
+      <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-ember-500 text-white">
         <PlayIcon />
       </span>
     )
   }
-
-  if (completed) {
+  if (done) {
     return (
-      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-emerald-400/10 text-emerald-300 ring-1 ring-emerald-400/20">
+      <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-emerald-500/90 text-abyss-950">
         <CheckIcon />
       </span>
     )
   }
-
-  return (
-    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-white/[0.08] font-mono text-[9px] text-slate-500">
-      {index}
-    </span>
-  )
+  return <span className="h-5 w-5 shrink-0 rounded-full border-2 border-slate-600" />
 }
 
 export default function CurriculumSidebar({
   courses,
   course,
-  selectedLessonId,
+  selectedStepId,
+  completed,
   onSelectCourse,
   onSelectLesson,
-  className = '',
 }) {
-  const allLessons = flattenLessons(course)
-  const completed = allLessons.filter((lesson) => lesson.completed).length
-  const total = allLessons.length
-  const progress = total > 0 ? Math.round((completed / total) * 100) : 0
-  const activeSection = course.sections.find((section) =>
-    section.lessons.some((lesson) => lesson.id === selectedLessonId),
-  )
-  const [openSections, setOpenSections] = useState(
-    () => new Set(activeSection ? [activeSection.id] : []),
-  )
+  const sections = course?.sections ?? []
+  const allSteps = sections.flatMap((section) => section.steps)
+  const doneCount = allSteps.filter((step) => completed.has(step.step_id)).length
+  const progress = allSteps.length ? Math.round((doneCount / allSteps.length) * 100) : 0
+  const activeSectionId = sections.find((section) =>
+    section.steps.some((step) => step.step_id === selectedStepId),
+  )?.section_id
 
-  const toggleSection = (sectionId) => {
-    setOpenSections((previous) => {
-      const next = new Set(previous)
-      if (next.has(sectionId)) next.delete(sectionId)
-      else next.add(sectionId)
+  // Opened sections are remembered; the active one is always open.
+  const [opened, setOpened] = useState(() => new Set())
+  const [closed, setClosed] = useState(() => new Set())
+  const isOpen = (id) => (id === activeSectionId ? !closed.has(id) : opened.has(id))
+  const toggle = (id) => {
+    const flip = (set) => {
+      const next = new Set(set)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       return next
-    })
+    }
+    if (id === activeSectionId) setClosed(flip)
+    else setOpened(flip)
   }
 
   return (
-    <aside
-      id="curriculum"
-      aria-label="Course curriculum"
-      className={`panel flex flex-col overflow-hidden ${className}`}
-    >
-      <div className="shrink-0 border-b border-white/[0.06] px-4 pb-4 pt-4">
-        <div className="flex items-center justify-between">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-500">
-            Course curriculum
-          </p>
-          <span className="rounded-full bg-white/[0.05] px-2 py-0.5 text-[9px] font-medium text-slate-400">
-            {total} lessons
-          </span>
-        </div>
+    <aside aria-label="Course content" className="flex h-full min-h-0 flex-col bg-abyss-900">
+      <div className="shrink-0 border-b border-white/[0.07] px-5 pb-4 pt-5">
+        <h2 className="text-[15px] font-bold text-white">Course content</h2>
 
-        <label className="relative mt-3 block">
-          <span className="sr-only">Select a course</span>
-          <select
-            value={course.id}
-            onChange={(event) => onSelectCourse(event.target.value)}
-            className="w-full appearance-none rounded-xl border border-white/[0.07] bg-abyss-950/70 px-3 py-2.5 pr-9 text-[12px] font-semibold text-slate-100 outline-none transition focus:border-ember-500/40 focus:ring-2 focus:ring-ember-500/15"
-          >
-            {courses.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.mark} · {item.title}
-              </option>
-            ))}
-          </select>
-          <SelectChevron />
-        </label>
+        {courses.length > 1 && (
+          <label className="relative mt-3 block">
+            <span className="sr-only">Switch course</span>
+            <select
+              value={course?.course_id ?? ''}
+              onChange={(event) => onSelectCourse(event.target.value)}
+              className="w-full appearance-none truncate rounded-lg border border-white/[0.09] bg-abyss-850 py-2.5 pl-3 pr-9 text-[13px] font-semibold text-slate-100 transition hover:border-white/20"
+            >
+              {courses.map((item) => (
+                <option key={item.course_id} value={item.course_id}>
+                  {item.title}
+                </option>
+              ))}
+            </select>
+            <SelectChevron />
+          </label>
+        )}
 
-        <div className="mt-3 flex items-center justify-between text-[10px] font-medium text-slate-500">
+        {courses.length <= 1 && course && (
+          <p className="mt-1 text-[13px] leading-5 text-slate-400">{course.title}</p>
+        )}
+
+        <div className="mt-4 flex items-center justify-between text-[12px] text-slate-400">
           <span>
-            {completed} of {total} complete
+            {doneCount} of {allSteps.length} lessons done
           </span>
-          <span className="font-semibold text-ember-300">{progress}%</span>
+          <span className="font-semibold tabular-nums text-slate-200">{progress}%</span>
         </div>
-        <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-ember-500 to-ember-300 transition-all duration-500"
-            style={{ width: `${progress}%` }}
-          />
+        <div
+          className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.07]"
+          role="progressbar"
+          aria-valuenow={progress}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label="Course progress"
+        >
+          <div className="h-full rounded-full bg-emerald-400 transition-[width] duration-500" style={{ width: `${progress}%` }} />
         </div>
       </div>
 
-      <div className="scrollbar-thin min-h-0 flex-1 space-y-2 overflow-y-auto p-2.5">
-        {course.sections.map((section) => {
-          const open = openSections.has(section.id)
-          const completedInSection = section.lessons.filter((lesson) => lesson.completed).length
+      <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
+        {sections.map((section, sectionIndex) => {
+          const open = isOpen(section.section_id)
+          const sectionDone = section.steps.filter((step) => completed.has(step.step_id)).length
+          const minutes = section.steps.reduce((sum, step) => sum + step.duration_mins, 0)
 
           return (
-            <div
-              key={section.id}
-              className="overflow-hidden rounded-xl border border-white/[0.05] bg-white/[0.015]"
-            >
+            <section key={section.section_id} className="border-b border-white/[0.07]">
               <button
                 type="button"
-                onClick={() => toggleSection(section.id)}
+                onClick={() => toggle(section.section_id)}
                 aria-expanded={open}
-                aria-controls={`section-${section.id}`}
-                className="flex w-full items-center gap-2.5 px-3 py-3 text-left transition hover:bg-white/[0.03]"
+                aria-controls={`section-${section.section_id}`}
+                className="flex w-full items-start gap-3 bg-abyss-850 px-5 py-3.5 text-left transition hover:bg-abyss-800"
               >
-                <span className="text-slate-500">
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[13.5px] font-bold leading-5 text-slate-100">
+                    Section {sectionIndex + 1}: {section.title}
+                  </span>
+                  <span className="mt-1 block text-[12px] tabular-nums text-slate-400">
+                    {sectionDone} / {section.steps.length} | {formatMinutes(minutes)}
+                  </span>
+                </span>
+                <span className="mt-0.5 text-slate-400">
                   <ChevronIcon open={open} />
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-slate-200">
-                  {section.title}
-                </span>
-                <span className="shrink-0 font-mono text-[9px] text-slate-500">
-                  {completedInSection}/{section.lessons.length}
                 </span>
               </button>
 
               {open && (
-                <ul id={`section-${section.id}`} className="space-y-0.5 border-t border-white/[0.04] p-1.5">
-                  {section.lessons.map((lesson, lessonIndex) => {
-                    const active = lesson.id === selectedLessonId
-                    const statusLabel = active
-                      ? 'Now playing'
-                      : lesson.completed
-                        ? 'Completed'
-                        : 'Up next'
-
+                <ul id={`section-${section.section_id}`}>
+                  {section.steps.map((step, stepIndex) => {
+                    const active = step.step_id === selectedStepId
+                    const done = completed.has(step.step_id)
                     return (
-                      <li key={lesson.id}>
+                      <li key={step.step_id}>
                         <button
                           type="button"
-                          onClick={() => onSelectLesson(lesson.id)}
+                          disabled={!step.available}
+                          onClick={() => onSelectLesson(step.step_id)}
                           aria-current={active ? 'step' : undefined}
-                          className={`flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left transition ${
-                            active
-                              ? 'bg-ember-500/[0.08] ring-1 ring-inset ring-ember-500/20'
-                              : 'hover:bg-white/[0.04]'
+                          className={`flex w-full items-start gap-3 px-5 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                            active ? 'bg-ember-500/[0.12]' : 'hover:bg-white/[0.04]'
                           }`}
                         >
-                          <LessonStatus
-                            active={active}
-                            completed={lesson.completed}
-                            index={lessonIndex + 1}
-                          />
-
+                          <LessonMarker active={active} done={done} />
                           <span className="min-w-0 flex-1">
                             <span
-                              className={`block truncate text-[12px] leading-5 ${
-                                active
-                                  ? 'font-semibold text-ember-100'
-                                  : lesson.completed
-                                    ? 'text-slate-300'
-                                    : 'text-slate-400'
+                              className={`block text-[13px] leading-5 ${
+                                active ? 'font-semibold text-white' : 'text-slate-300'
                               }`}
                             >
-                              {lesson.title}
+                              {stepIndex + 1}. {step.title}
                             </span>
-                            <span
-                              className={`mt-0.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] ${
-                                active ? 'text-ember-400/90' : 'text-slate-600'
-                              }`}
-                            >
-                              {statusLabel}
+                            <span className="mt-1 block text-[11.5px] tabular-nums text-slate-500">
+                              {step.available ? `${step.duration_mins} min` : 'Not generated yet'}
                             </span>
-                          </span>
-
-                          <span className="shrink-0 pt-0.5 text-[10px] tabular-nums text-slate-500">
-                            {lesson.duration}
                           </span>
                         </button>
                       </li>
@@ -230,28 +205,9 @@ export default function CurriculumSidebar({
                   })}
                 </ul>
               )}
-            </div>
+            </section>
           )
         })}
-      </div>
-
-      <div id="progress" className="shrink-0 border-t border-white/[0.06] p-3">
-        <div className="rounded-xl border border-white/[0.06] bg-abyss-950/50 p-3.5">
-          <div className="flex items-center justify-between">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
-              Daily goal
-            </p>
-            <span className="text-[10px] font-semibold text-ember-300">3 / 5 lessons</span>
-          </div>
-
-          <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
-            <div className="h-full w-3/5 rounded-full bg-gradient-to-r from-ember-500 to-ember-300" />
-          </div>
-
-          <p className="mt-2.5 text-[10px] leading-5 text-slate-500">
-            Two more lessons keep your 7-day streak alive.
-          </p>
-        </div>
       </div>
     </aside>
   )

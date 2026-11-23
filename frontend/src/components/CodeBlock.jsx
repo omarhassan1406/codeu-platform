@@ -100,10 +100,13 @@ function CheckIcon() {
   )
 }
 
-export default function CodeViewer({ filename, language, code }) {
+const PYTHON_LIKE = new Set(['python', 'py', 'bash', 'sh', 'shell', 'yaml', 'yml', 'ruby', 'r'])
+
+export default function CodeBlock({ language = '', code }) {
   const [copied, setCopied] = useState(false)
-  const pattern = language === 'Python' ? PYTHON_TOKENS : C_LIKE_TOKENS
-  const lines = code.split('\n')
+  const lang = language.toLowerCase()
+  const pattern = PYTHON_LIKE.has(lang) ? PYTHON_TOKENS : C_LIKE_TOKENS
+  const lines = code.replace(/\n$/, '').split('\n')
 
   const handleCopy = async () => {
     try {
@@ -116,40 +119,28 @@ export default function CodeViewer({ filename, language, code }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#0c0e14]">
-      <div className="flex shrink-0 items-center gap-2.5 border-b border-white/[0.06] px-4 py-3">
-        <span className="h-2.5 w-2.5 rounded-full bg-[#FF5F57]" />
-        <span className="h-2.5 w-2.5 rounded-full bg-[#FEBC2E]" />
-        <span className="h-2.5 w-2.5 rounded-full bg-[#28C840]" />
-
-        <div className="ml-2 flex min-w-0 items-center gap-2 rounded-lg bg-abyss-950/60 px-3 py-1.5 ring-1 ring-white/[0.05]">
-          <span className="status-pulse h-1.5 w-1.5 shrink-0 rounded-full bg-ember-400" />
-          <span className="truncate font-mono text-[11px] text-slate-300">{filename}</span>
-        </div>
-
-        <span className="ml-auto hidden rounded-md border border-white/[0.07] px-2 py-1 text-[10px] font-medium text-slate-500 sm:block">
-          {language}
-        </span>
-
+    <figure dir="ltr" className="my-6overflow-hidden rounded-xl border border-white/[0.07] bg-abyss-950">
+      <figcaption className="flex items-center justify-between gap-3 border-b border-white/[0.06] bg-white/[0.02] px-4 py-2">
+        <span className="font-mono text-[11px] text-slate-400">{lang || 'code'}</span>
         <button
           type="button"
           onClick={handleCopy}
-          className="flex items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.03] px-2.5 py-1.5 text-[10px] font-semibold text-slate-400 transition hover:border-ember-500/30 hover:text-ember-300"
+          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold text-slate-400 transition hover:bg-white/[0.05] hover:text-ember-300"
         >
           {copied ? <CheckIcon /> : <CopyIcon />}
           {copied ? 'Copied' : 'Copy'}
         </button>
-      </div>
+      </figcaption>
 
-      <div className="scrollbar-thin min-h-0 flex-1 overflow-auto bg-[#0b0d13] px-2 py-4 font-mono text-[12.5px] leading-6 sm:text-[13px] sm:leading-7">
+      <pre className="scrollbar-thin overflow-x-auto py-3 font-mono text-[13px] leading-6">
         {lines.map((line, lineIndex) => (
           <div key={lineIndex} className="flex min-w-max px-2">
-            <span className="w-8 shrink-0 select-none pr-4 text-right text-[11px] text-slate-700">
+            <span className="w-9 shrink-0 select-none pr-4 text-right text-[11px] tabular-nums text-slate-600">
               {lineIndex + 1}
             </span>
-            <code className="whitespace-pre">
+            <code className="whitespace-pre pr-4">
               {line.length === 0
-                ? '\u00A0'
+                ? ' '
                 : tokenizeLine(line, pattern).map((token, tokenIndex) => (
                     <span key={tokenIndex} className={TOKEN_CLASSES[token.type]}>
                       {token.text}
@@ -158,12 +149,7 @@ export default function CodeViewer({ filename, language, code }) {
             </code>
           </div>
         ))}
-      </div>
-
-      <div className="flex shrink-0 items-center justify-between border-t border-white/[0.05] px-4 py-2 text-[9px] font-medium uppercase tracking-[0.18em] text-slate-600">
-        <span className="code-footer-label">AI sandbox · synced with lesson</span>
-        <span className="font-mono normal-case tracking-normal">{lines.length} lines</span>
-      </div>
-    </div>
+      </pre>
+    </figure>
   )
 }

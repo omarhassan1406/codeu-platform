@@ -1,0 +1,210 @@
+import { useEffect, useRef, useState } from 'react'
+import RiveAvatar from './RiveAvatar'
+
+const STATUS_LABEL = {
+  idle: 'Ready for questions',
+  listening: 'Listening…',
+  thinking: 'Checking the lesson…',
+  talking: 'Speaking',
+  explaining: 'Explaining',
+}
+
+function HandIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true" className="h-4 w-4">
+      <path
+        d="M8 11V5.5a1.5 1.5 0 0 1 3 0V10m0-5.5V4a1.5 1.5 0 0 1 3 0v6m0-4.5a1.5 1.5 0 0 1 3 0V13a7 7 0 0 1-7 7h-.6a6 6 0 0 1-4.6-2.2L2.6 14.9a1.6 1.6 0 0 1 2.4-2.1L8 15.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function SendIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="h-4 w-4">
+      <path d="m5 12 14-7-5 15-2.5-6.5L5 12Z" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="h-4 w-4">
+      <path d="m6 6 12 12M18 6 6 18" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function AnswerCard({ exchange, onReplay, speaking }) {
+  const [showSources, setShowSources] = useState(false)
+  return (
+    <div className="mt-3 rounded-xl border border-white/[0.08] bg-abyss-900 p-3.5">
+      <p dir="auto" className="text-[12px] text-slate-400">
+        You asked: <span className="text-slate-200">{exchange.question}</span>
+      </p>
+      <p dir="auto" className="scrollbar-thin mt-2 max-h-48 overflow-y-auto text-[14px] leading-7 text-slate-100">
+        {exchange.answer}
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+        {exchange.grounded ? (
+          <button
+            type="button"
+            onClick={() => setShowSources((v) => !v)}
+            aria-expanded={showSources}
+            className="font-semibold text-emerald-300 underline-offset-4 hover:underline"
+          >
+            From {exchange.sources.length} lesson excerpt{exchange.sources.length === 1 ? '' : 's'}
+          </button>
+        ) : (
+          <span className="text-amber-300">Not covered in this course</span>
+        )}
+        {!speaking && (
+          <button type="button" onClick={onReplay} className="font-semibold text-slate-300 hover:text-white">
+            Replay captions
+          </button>
+        )}
+      </div>
+      {showSources && (
+        <ol className="scrollbar-thin mt-2 max-h-40 space-y-2 overflow-y-auto">
+          {exchange.sources.map((source, i) => (
+            <li key={i} dir="auto" className="rounded-lg bg-white/[0.04] px-3 py-2 text-[12px] leading-5 text-slate-400">
+              {source.length > 280 ? `${source.slice(0, 280)}…` : source}
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
+}
+
+export default function Professor({ tutor, disabled }) {
+  const [open, setOpen] = useState(false)
+  const [question, setQuestion] = useState('')
+  const inputRef = useRef(null)
+  const busy = tutor.status === 'thinking'
+
+  useEffect(() => {
+    if (open) inputRef.current?.focus()
+  }, [open])
+
+  const openPanel = () => {
+    setOpen(true)
+    tutor.startListening()
+  }
+
+  const closePanel = () => {
+    setOpen(false)
+    if (tutor.status === 'listening') tutor.stop()
+  }
+
+  const submit = (event) => {
+    event.preventDefault()
+    const text = question.trim()
+    if (text.length < 2 || busy) return
+    tutor.ask(text)
+    setQuestion('')
+  }
+
+  return (
+    <div className="pointer-events-none fixed bottom-0 left-0 z-40 flex items-end">
+      {/* Standalone avatar: no bubble; RiveAvatar stays invisible until Rive is ready. */}
+      <RiveAvatar
+        status={tutor.status}
+        className="pointer-events-none h-[160px] w-[124px] shrink-0 lg:h-[230px] lg:w-[180px] xl:h-[290px] xl:w-[228px]"
+      />
+
+      <div className="pointer-events-auto mb-4 -ml-2 w-[min(380px,calc(100vw-150px))] lg:mb-6 lg:-ml-6">
+        {open && (
+          <div
+            role="dialog"
+            aria-label="Ask the professor"
+            className="step-in mb-3 rounded-2xl border border-white/[0.09] bg-abyss-800 p-4 shadow-[0_24px_60px_-20px_rgba(0,0,0,0.7)]"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[14px] font-bold text-white">Ask about this lesson</p>
+              <button
+                type="button"
+                onClick={closePanel}
+                aria-label="Close question panel"
+                className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 transition hover:bg-white/[0.06] hover:text-white"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+            <p className="mt-1 text-[12px] leading-5 text-slate-400">
+              Answers come only from this course. If it isn&apos;t covered, the professor will say so.
+            </p>
+
+            <form onSubmit={submit} className="mt-3 flex items-end gap-2">
+              <label className="sr-only" htmlFor="tutor-question">
+                Your question
+              </label>
+              <textarea
+                id="tutor-question"
+                ref={inputRef}
+                dir="auto"
+                rows={2}
+                maxLength={1000}
+                value={question}
+                disabled={busy}
+                onChange={(event) => setQuestion(event.target.value)}
+                onFocus={() => tutor.status === 'idle' && !tutor.speaking && tutor.startListening()}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) submit(event)
+                  if (event.key === 'Escape') closePanel()
+                }}
+                placeholder="e.g. What is the difference between a list and a tuple?"
+                className="scrollbar-thin min-h-[44px] flex-1 resize-none rounded-xl border border-white/[0.1] bg-abyss-900 px-3 py-2.5 text-[14px] leading-6 text-white placeholder:text-slate-500 focus:border-ember-400/60 focus:outline-none disabled:opacity-60"
+              />
+              <button
+                type="submit"
+                disabled={busy || question.trim().length < 2}
+                aria-label="Send question"
+                className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-ember-500 text-white transition hover:bg-ember-400 disabled:bg-abyss-700 disabled:text-slate-500"
+              >
+                <SendIcon />
+              </button>
+            </form>
+
+            {busy && <p className="mt-3 text-[13px] text-amber-200">The professor is checking the lesson…</p>}
+            {tutor.error && (
+              <p role="alert" className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-[13px] text-red-200">
+                {tutor.error}
+              </p>
+            )}
+            {tutor.exchange && !busy && (
+              <AnswerCard exchange={tutor.exchange} onReplay={tutor.replay} speaking={tutor.speaking} />
+            )}
+          </div>
+        )}
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={open ? closePanel : openPanel}
+            disabled={disabled}
+            aria-expanded={open}
+            className="flex items-center gap-2 rounded-full bg-ember-500 px-4 py-2.5 text-[14px] font-bold text-white shadow-[0_10px_30px_-10px_rgba(255,87,34,0.7)] transition hover:bg-ember-400 disabled:bg-abyss-700 disabled:text-slate-500 disabled:shadow-none"
+          >
+            <HandIcon />
+            {open ? 'Hide question' : 'Raise hand'}
+          </button>
+          {tutor.speaking && (
+            <button
+              type="button"
+              onClick={tutor.stop}
+              className="rounded-full border border-white/15 bg-abyss-800 px-3 py-2 text-[13px] font-semibold text-slate-200 transition hover:text-white"
+            >
+              Stop
+            </button>
+          )}
+          <span className="hidden rounded-full bg-abyss-800/90 px-3 py-1.5 text-[12px] font-medium text-slate-300 sm:inline" aria-live="polite">
+            {STATUS_LABEL[tutor.status] ?? STATUS_LABEL.idle}
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -1,12 +1,17 @@
 import logging
 import time
-import uuid
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
-from app.schemas.courses import CourseDetail, CourseStatus, CourseSummary, LessonDetail
-from app.services import course_catalog
+from app.schemas.courses import (
+    CourseDetail,
+    CourseStatus,
+    CourseSummary,
+    GenerationJob,
+    LessonDetail,
+)
+from app.services import course_catalog, generation_jobs
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -26,6 +31,7 @@ class GenerateCourseRequest(BaseModel):
 
 class GenerateCourseResponse(BaseModel):
     status: str
+    job_id: str = Field(description="Poll GET /courses/jobs/{job_id} for progress")
     course_topic: str
     message: str
 
@@ -33,11 +39,18 @@ class GenerateCourseResponse(BaseModel):
 def _generate_course(job_id: str, course_topic: str) -> None:
     started_at = time.monotonic()
     logger.info("Course generation job %s started (topic=%r)", job_id, course_topic)
+    generation_jobs.mark_running(job_id)
     try:
         from Generate_Course import run_codeu_complete_pipeline
 
-        run_codeu_complete_pipeline(course_topic=course_topic)
-    except Exception:
+        run_codeu_complete_pipeline(
+            course_topic=course_topic,
+            on_progress=generation_jobs.progress_callback(job_id),
+        )
+    except Exception as error:
+        # Compared by name so a failed pipeline import still lands here cleanly.
+        incomplete = type(error).__name__ == "GenerationIncompleteError"
+        generation_jobs.mark_failed(job_id, incomplete=incomplete)
         logger.exception(
             "Course generation job %s failed (topic=%r, elapsed=%.1fs)",
             job_id,
@@ -45,6 +58,7 @@ def _generate_course(job_id: str, course_topic: str) -> None:
             time.monotonic() - started_at,
         )
     else:
+        generation_jobs.mark_complete(job_id)
         logger.info(
             "Course generation job %s completed (topic=%r, elapsed=%.1fs)",
             job_id,
@@ -63,14 +77,24 @@ async def generate_course(
     background_tasks: BackgroundTasks,
 ) -> GenerateCourseResponse:
     """Start full course generation (roadmap, lessons, Qdrant ingestion) in the background."""
-    job_id = uuid.uuid4().hex[:12]
-    logger.info("Accepted course generation job %s (topic=%r)", job_id, request.course_topic)
-    background_tasks.add_task(_generate_course, job_id, request.course_topic)
+    job = generation_jobs.create_job(request.course_topic)
+    logger.info("Accepted course generation job %s (topic=%r)", job.job_id, request.course_topic)
+    background_tasks.add_task(_generate_course, job.job_id, request.course_topic)
     return GenerateCourseResponse(
         status="accepted",
+        job_id=job.job_id,
         course_topic=request.course_topic,
         message="Course generation started in the background.",
     )
+
+
+@router.get("/jobs/{job_id}", response_model=GenerationJob)
+def get_generation_job(job_id: str) -> GenerationJob:
+    """Progress of a generation job started with POST /courses/generate."""
+    job = generation_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return job
 
 
 # ---- Read-only catalog -----------------------------------------------------

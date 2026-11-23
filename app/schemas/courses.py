@@ -54,3 +54,25 @@ class LessonDetail(BaseModel):
     content_markdown: str
     previous_step_id: str | None
     next_step_id: str | None
+
+
+# queued:   accepted, waiting for a worker thread
+# running:  roadmap and lessons are being generated
+# complete: every lesson was generated, saved and ingested
+# failed:   generation stopped; ``error`` explains it in learner-safe words
+JobStatus = Literal["queued", "running", "complete", "failed"]
+
+
+class GenerationJob(BaseModel):
+    job_id: str
+    course_topic: str
+    status: JobStatus
+    course_id: str | None = Field(
+        None, description="Set once the roadmap exists; open it with GET /courses/{course_id}"
+    )
+    course_title: str | None = None
+    total_steps: int = 0
+    completed_steps: int = 0
+    error: str | None = None
+    created_at: str
+    updated_at: str

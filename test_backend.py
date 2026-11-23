@@ -145,7 +145,7 @@ class CourseGenerationTests(unittest.TestCase):
         self.pipeline_calls = []
         self.pipeline_done = threading.Event()
 
-        def fake_pipeline(course_topic):
+        def fake_pipeline(course_topic, on_progress=None):
             self.pipeline_calls.append(course_topic)
             self.pipeline_done.set()
 
@@ -183,7 +183,7 @@ class CourseGenerationTests(unittest.TestCase):
         self.assertEqual(self.pipeline_calls, ["Machine Learning"])
 
     def test_background_failure_is_logged_not_raised(self):
-        def failing_pipeline(course_topic):
+        def failing_pipeline(course_topic, on_progress=None):
             raise RuntimeError("simulated pipeline failure")
 
         Generate_Course.run_codeu_complete_pipeline = failing_pipeline
@@ -1149,6 +1149,197 @@ class ConfigTests(unittest.TestCase):
         from app.core.config import Settings
 
         self.assertEqual(Path(Settings.model_config["env_file"]), Path(BASE_DIR).resolve() / ".env")
+
+class GenerationJobTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def setUp(self):
+        from app.services import generation_jobs
+
+        self.jobs = generation_jobs
+        generation_jobs.clear()
+        self.addCleanup(generation_jobs.clear)
+
+    def _start(self, pipeline, topic="Python for Beginners"):
+        with mock.patch.object(Generate_Course, "run_codeu_complete_pipeline", pipeline):
+            response = self.client.post("/api/v1/courses/generate", json={"course_topic": topic})
+        self.assertEqual(response.status_code, 202)
+        return response.json()["job_id"]
+
+    def _job(self, job_id):
+        response = self.client.get(f"/api/v1/courses/jobs/{job_id}")
+        self.assertEqual(response.status_code, 200)
+        return response.json()
+
+    def test_successful_job_reports_progress_and_completion(self):
+        seen = {}
+
+        def pipeline(course_topic, on_progress=None):
+            seen["callable"] = callable(on_progress)
+            on_progress({"course_id": "Py_Course", "course_title": "Py Course",
+                         "total_steps": 4, "completed_steps": ["1.1", "1.2"]})
+
+        job = self._job(self._start(pipeline))
+        self.assertTrue(seen["callable"])
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual(job["course_id"], "Py_Course")
+        self.assertEqual(job["course_title"], "Py Course")
+        self.assertEqual((job["completed_steps"], job["total_steps"]), (2, 4))
+        self.assertIsNone(job["error"])
+        self.assertEqual(job["course_topic"], "Python for Beginners")
+
+    def test_failed_job_reports_safe_message(self):
+        def pipeline(course_topic, on_progress=None):
+            raise RuntimeError("secret internal detail")
+
+        with self.assertLogs("app.api.v1.endpoints.courses", level="ERROR"):
+            job = self._job(self._start(pipeline))
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["error"], self.jobs.FAILED_MESSAGE)
+        self.assertNotIn("secret", job["error"])
+
+    def test_incomplete_generation_gets_its_own_message(self):
+        def pipeline(course_topic, on_progress=None):
+            raise Generate_Course.GenerationIncompleteError("truncated")
+
+        with self.assertLogs("app.api.v1.endpoints.courses", level="ERROR"):
+            job = self._job(self._start(pipeline))
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["error"], self.jobs.INCOMPLETE_MESSAGE)
+
+    def test_new_job_is_queued_until_the_worker_starts(self):
+        job = self.jobs.create_job("Topic")
+        self.assertEqual(job.status, "queued")
+        self.assertEqual(self.jobs.get_job(job.job_id).status, "queued")
+        self.jobs.mark_running(job.job_id)
+        self.assertEqual(self.jobs.get_job(job.job_id).status, "running")
+
+    def test_unknown_job_returns_404(self):
+        response = self.client.get("/api/v1/courses/jobs/does-not-exist")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), {"detail": "Job not found"})
+
+    def test_pipeline_reports_progress_after_each_lesson(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        updates = []
+        roadmap = Generate_Course.CourseRoadmap.model_validate(make_roadmap_dict(title="Course A"))
+        with mock.patch.object(Generate_Course, "ensure_collection"), \
+                mock.patch.object(Generate_Course, "generate_course_roadmap", return_value=roadmap), \
+                mock.patch.object(Generate_Course, "generate_step_content", return_value=COMPLETE_LESSON), \
+                mock.patch.object(Generate_Course, "ingest_lesson_to_qdrant_with_retry"):
+            Generate_Course.run_codeu_complete_pipeline("Course A", output_dir=tmp.name, on_progress=updates.append)
+
+        self.assertEqual(updates[0]["status"], "in_progress")
+        self.assertEqual(updates[0]["completed_steps"], [])
+        self.assertEqual(updates[-1]["status"], "complete")
+        self.assertEqual(len(updates[-1]["completed_steps"]), 8)
+        self.assertEqual({u["course_id"] for u in updates}, {"Course_A"})
+        # Each update is a snapshot, not the live manifest list.
+        self.assertEqual([len(u["completed_steps"]) for u in updates[:3]], [0, 1, 2])
+
+    def test_broken_progress_callback_does_not_stop_generation(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        roadmap = Generate_Course.CourseRoadmap.model_validate(make_roadmap_dict(title="Course A"))
+
+        def broken(update):
+            raise ValueError("boom")
+
+        with mock.patch.object(Generate_Course, "ensure_collection"), \
+                mock.patch.object(Generate_Course, "generate_course_roadmap", return_value=roadmap), \
+                mock.patch.object(Generate_Course, "generate_step_content", return_value=COMPLETE_LESSON), \
+                mock.patch.object(Generate_Course, "ingest_lesson_to_qdrant_with_retry"), \
+                self.assertLogs(level="ERROR"):
+            result = Generate_Course.run_codeu_complete_pipeline("Course A", output_dir=tmp.name, on_progress=broken)
+        self.assertEqual(result.course_title, "Course A")
+
+
+class ReingestTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        import reingest_courses
+
+        self.reingest = reingest_courses
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+
+    def _write_course(self, title="Course A", skip=()):
+        import json
+
+        from app.core.course_paths import course_dir, lesson_filename
+
+        roadmap = make_roadmap_dict(title=title)
+        folder = course_dir(self.base, title)
+        folder.mkdir(parents=True)
+        (folder / "roadmap.json").write_text(json.dumps(roadmap), encoding="utf-8")
+        for section in roadmap["sections"]:
+            for step in section["steps"]:
+                if step["step_id"] in skip:
+                    continue
+                text = f"# {section['section_title']}\n## {step['step_title']}\n\nBody of {step['step_id']}"
+                (folder / lesson_filename(step["step_id"], step["step_title"])).write_text(text, encoding="utf-8")
+        return folder, roadmap
+
+    def test_ingests_every_saved_lesson_without_the_saved_header(self):
+        folder, roadmap = self._write_course(skip=("2.4",))
+        calls = []
+        report = self.reingest.reingest_course(folder, lambda **kw: calls.append(kw), lambda text: 2)
+
+        self.assertEqual(report.course_title, "Course A")
+        self.assertEqual(report.lessons_ingested, 7)
+        self.assertEqual(report.chunks, 14)
+        self.assertEqual(report.missing_lessons, ["2.4"])
+        first = calls[0]
+        self.assertEqual(first["course_title"], "Course A")
+        self.assertEqual(first["step_id"], "1.1")
+        self.assertEqual(first["section_title"], roadmap["sections"][0]["section_title"])
+        self.assertEqual(first["content"], "Body of 1.1")
+
+    def test_dry_run_never_ingests(self):
+        folder, _ = self._write_course()
+        report = self.reingest.reingest_course(folder, None, lambda text: 1)
+        self.assertEqual(report.lessons_ingested, 8)
+
+    def test_header_strip_handles_crlf_and_leaves_other_text_alone(self):
+        strip = self.reingest.strip_lesson_header
+        self.assertEqual(strip("# S\r\n## T\r\n\r\nBody", "S", "T"), "Body")
+        self.assertEqual(strip("No header here", "S", "T"), "No header here")
+
+    def test_reuses_pipeline_ingestion_with_deterministic_ids(self):
+        folder, _ = self._write_course()
+        qdrant = mock.Mock()
+        with mock.patch.object(Generate_Course, "get_qdrant_client", return_value=qdrant), \
+                mock.patch.object(Generate_Course, "get_embedding_model") as embed:
+            embed.return_value.encode.return_value.tolist.return_value = [0.0]
+            self.reingest.reingest_course(folder, Generate_Course.ingest_lesson_to_qdrant_with_retry, lambda t: 1)
+            first_ids = [c.kwargs["points"][0].id for c in qdrant.upsert.call_args_list]
+            qdrant.reset_mock()
+            self.reingest.reingest_course(folder, Generate_Course.ingest_lesson_to_qdrant_with_retry, lambda t: 1)
+            second_ids = [c.kwargs["points"][0].id for c in qdrant.upsert.call_args_list]
+
+        self.assertEqual(first_ids, second_ids)
+        self.assertEqual(first_ids[0], Generate_Course.make_point_id("Course A", "1.1", 0))
+        self.assertEqual(qdrant.delete.call_count, 8)
+
+    def test_cli_rejects_unknown_course_and_dry_runs_known_ones(self):
+        import contextlib
+        import io as _io
+
+        self._write_course()
+        out = _io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(_io.StringIO()):
+            self.assertEqual(self.reingest.main(["--base-dir", str(self.base), "--course", "Nope"]), 2)
+            self.assertEqual(self.reingest.main(["--base-dir", str(self.base), "--dry-run"]), 0)
+        self.assertIn("OK      Course_A: 8 lessons", out.getvalue())
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
