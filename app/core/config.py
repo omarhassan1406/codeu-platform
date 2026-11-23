@@ -48,13 +48,34 @@ class Settings(BaseSettings):
     QDRANT_API_KEY: str = ""
     COLLECTION_NAME: str = "CodeU"
 
+    # ---- Embeddings ---------------------------------------------------------
+    # "gemini": Gemini Embedding API. No model download, low RAM; fits free
+    #   cloud hosting. Default.
+    # "local": BAAI/bge-m3 via sentence-transformers (~2.3 GB download, needs
+    #   torch: pip install -r requirements-local.txt). Fixed 1024 dims.
+    # Switching provider or dimensions changes the vector size, so the Qdrant
+    # collection must be rebuilt: reingest_courses.py --recreate-collection.
+    EMBEDDING_PROVIDER: Literal["gemini", "local"] = "gemini"
+    # gemini-embedding-001 returns one vector per text; gemini-embedding-2
+    # merges a multi-text request into a single vector, so it cannot batch.
+    GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    # Output size for Gemini embeddings (Matryoshka: 768, 1536 or 3072 are the
+    # recommended sizes). 768 keeps the collection small on free tiers.
+    EMBEDDING_DIMENSIONS: int = Field(768, ge=128, le=3072)
+    LOCAL_EMBEDDING_MODEL: str = "BAAI/bge-m3"
+
     # ---- Retrieval / grounding ---------------------------------------------
     # Number of chunks given to the tutor as context.
     RAG_TOP_K: int = Field(3, ge=1, le=20)
-    # Minimum cosine similarity (bge-m3) for a chunk to count as relevant.
+    # Minimum cosine similarity for a chunk to count as relevant. The scale
+    # depends on the embedding model, so recalibrate after switching provider.
     # Below this the chunk is dropped; with no chunks left the tutor declines
     # instead of answering from weak context.
-    RAG_MIN_SCORE: float = Field(0.45, ge=0.0, le=1.0)
+    # Calibrated live for gemini-embedding-001 @768 (2026-11-23, Python course):
+    # in-lesson questions scored 0.67-0.74, off-topic 0.51-0.60. 0.64 sits in
+    # the gap, so off-topic questions are declined before any generation call.
+    # Small sample: re-check as more courses are ingested. (bge-m3 used 0.45.)
+    RAG_MIN_SCORE: float = Field(0.64, ge=0.0, le=1.0)
     # Optional second-stage reranker. "none" keeps vector order; "bge" loads
     # BAAI/bge-reranker-large (lazily) and re-scores RAG_RERANK_CANDIDATES hits.
     RERANKER: Literal["none", "bge"] = "none"

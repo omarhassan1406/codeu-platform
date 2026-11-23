@@ -90,7 +90,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--course", action="append", help="course folder name (repeatable)")
     parser.add_argument("--base-dir", default=str(settings.GENERATED_COURSES_DIR))
     parser.add_argument("--dry-run", action="store_true", help="count chunks without touching Qdrant")
+    parser.add_argument(
+        "--recreate-collection",
+        action="store_true",
+        help="delete and rebuild the collection when its vector size differs from the embedding model "
+        "(removes every stored chunk, including courses not re-ingested in this run)",
+    )
     args = parser.parse_args(argv)
+    if args.dry_run and args.recreate_collection:
+        parser.error("--dry-run and --recreate-collection cannot be combined")
 
     base_dir = Path(args.base_dir)
     available = course_ids(base_dir)
@@ -104,11 +112,23 @@ def main(argv: list[str] | None = None) -> int:
     ingest = None
     if not args.dry_run:
         from Generate_Course import ensure_collection, ingest_lesson_to_qdrant_with_retry
+        from app.services.vector_store import CollectionDimensionError
 
-        ensure_collection()
+        try:
+            action = ensure_collection(recreate=args.recreate_collection)
+        except CollectionDimensionError as error:
+            print(str(error), file=sys.stderr)
+            return 3
+        print(f"Collection {settings.COLLECTION_NAME!r}: {action}")
         ingest = ingest_lesson_to_qdrant_with_retry
 
-    print(f"Chunker: {chunker.name} | courses: {len(selected)} | {'dry run' if args.dry_run else 'writing to Qdrant'}")
+    from app.services.embeddings import get_embedder
+
+    embedder = get_embedder()
+    print(
+        f"Chunker: {chunker.name} | embeddings: {embedder.name}:{embedder.model} ({embedder.dimensions} dims) "
+        f"| courses: {len(selected)} | {'dry run' if args.dry_run else 'writing to Qdrant'}"
+    )
     failed = False
     for cid in selected:
         try:

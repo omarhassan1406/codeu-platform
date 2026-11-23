@@ -9,6 +9,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+# httpx logs every request URL at INFO, which writes the private Qdrant
+# cluster address into server logs. Keep only its warnings and errors.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

@@ -54,6 +54,7 @@ class _ExternalServiceGuard:
 
 _ai_clients_stub = pytypes.ModuleType("app.services.ai_clients")
 _ai_clients_stub.get_embedding_model = lambda: _ExternalServiceGuard()
+_ai_clients_stub.LOCAL_EMBEDDING_DIMENSIONS = 1024
 _ai_clients_stub.get_qdrant_client = lambda: _ExternalServiceGuard()
 _default_gemini = FakeGeminiClient()
 _ai_clients_stub.get_gemini_client = lambda: _default_gemini
@@ -544,15 +545,22 @@ class FakeHit:
         self.payload = {"text": text, "step_id": step_id, "step_title": "Variables"}
 
 
-class FakeEmbedding:
-    def encode(self, text):
-        return pytypes.SimpleNamespace(tolist=lambda: [0.1, 0.2])
+class FakeEmbedder:
+    name = "fake"
+    model = "fake-embed"
+    dimensions = 2
+
+    def embed_query(self, text):
+        return [0.1, 0.2]
+
+    def embed_documents(self, texts):
+        return [[0.1, 0.2] for _ in texts]
 
 
 class RagServiceTests(unittest.TestCase):
     def setUp(self):
         self.qdrant = mock.Mock()
-        for name, value in (("get_embedding_model", FakeEmbedding()), ("get_qdrant_client", self.qdrant)):
+        for name, value in (("get_embedder", FakeEmbedder()), ("get_qdrant_client", self.qdrant)):
             patcher = mock.patch.object(rag_service, name, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -774,7 +782,7 @@ class IngestionTests(unittest.TestCase):
     def test_ingestion_replaces_old_chunks_with_deterministic_ids(self):
         qdrant = mock.Mock()
         with mock.patch.object(Generate_Course, "get_qdrant_client", return_value=qdrant), \
-             mock.patch.object(Generate_Course, "get_embedding_model", return_value=FakeEmbedding()):
+             mock.patch.object(Generate_Course, "get_embedder", return_value=FakeEmbedder()):
             Generate_Course.ingest_lesson_to_qdrant_with_retry("Py", "Basics", "1.1", "Setup", "word " * 600)
 
         delete_filter = qdrant.delete.call_args.kwargs["points_selector"].filter
@@ -788,12 +796,14 @@ class IngestionTests(unittest.TestCase):
         self.assertGreater(len(points), 1)
         self.assertEqual(points[0].id, Generate_Course.make_point_id("Py", "1.1", 0))
         self.assertEqual(points[0].payload["chunk_strategy"], settings.CHUNK_STRATEGY)
+        self.assertEqual(points[0].payload["embedding_model"], "fake:fake-embed:2")
+        self.assertEqual(points[0].vector, [0.1, 0.2])
 
     def test_ingestion_failure_is_raised_after_retries(self):
         qdrant = mock.Mock()
         qdrant.upsert.side_effect = ConnectionError("down")
         with mock.patch.object(Generate_Course, "get_qdrant_client", return_value=qdrant), \
-             mock.patch.object(Generate_Course, "get_embedding_model", return_value=FakeEmbedding()), \
+             mock.patch.object(Generate_Course, "get_embedder", return_value=FakeEmbedder()), \
              mock.patch.object(Generate_Course.time, "sleep"):
             with self.assertRaises(Generate_Course.IngestionError):
                 Generate_Course.ingest_lesson_to_qdrant_with_retry("Py", "Basics", "1.1", "Setup", "text")
@@ -931,7 +941,7 @@ class RerankerTests(unittest.TestCase):
         qdrant.query_points.return_value = pytypes.SimpleNamespace(
             points=[FakeHit(0.9, "ok"), FakeHit(0.6, "the best one"), FakeHit(0.7, "fine")]
         )
-        with mock.patch.object(rag_service, "get_embedding_model", return_value=FakeEmbedding()), \
+        with mock.patch.object(rag_service, "get_embedder", return_value=FakeEmbedder()), \
              mock.patch.object(rag_service, "get_qdrant_client", return_value=qdrant):
             result = rag_service.search_course_rag("Py", "q", limit=2, min_score=0.5, reranker=reranker)
         return result, qdrant.query_points.call_args.kwargs
@@ -1164,7 +1174,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_documented_defaults(self):
         s = self.make()
-        self.assertEqual((s.RAG_TOP_K, s.RAG_MIN_SCORE), (3, 0.45))
+        self.assertEqual((s.RAG_TOP_K, s.RAG_MIN_SCORE), (3, 0.64))
         self.assertEqual((s.RERANKER, s.RAG_RERANK_CANDIDATES), ("none", 20))
         self.assertEqual((s.CHUNK_STRATEGY, s.CHUNK_SIZE_CHARS, s.CHUNK_OVERLAP_CHARS), ("character", 600, 120))
         self.assertEqual((s.CHUNK_SIZE_WORDS, s.CHUNK_OVERLAP_WORDS), (500, 50))
@@ -1366,8 +1376,7 @@ class ReingestTests(unittest.TestCase):
         folder, _ = self._write_course()
         qdrant = mock.Mock()
         with mock.patch.object(Generate_Course, "get_qdrant_client", return_value=qdrant), \
-                mock.patch.object(Generate_Course, "get_embedding_model") as embed:
-            embed.return_value.encode.return_value.tolist.return_value = [0.0]
+                mock.patch.object(Generate_Course, "get_embedder", return_value=FakeEmbedder()):
             self.reingest.reingest_course(folder, Generate_Course.ingest_lesson_to_qdrant_with_retry, lambda t: 1)
             first_ids = [c.kwargs["points"][0].id for c in qdrant.upsert.call_args_list]
             qdrant.reset_mock()
@@ -1388,6 +1397,229 @@ class ReingestTests(unittest.TestCase):
             self.assertEqual(self.reingest.main(["--base-dir", str(self.base), "--course", "Nope"]), 2)
             self.assertEqual(self.reingest.main(["--base-dir", str(self.base), "--dry-run"]), 0)
         self.assertIn("OK      Course_A: 8 lessons", out.getvalue())
+
+# =====================================================================
+# Embedding providers and collection sizing
+# =====================================================================
+
+
+class FakeEmbedModels:
+    def __init__(self, dims=4, failures=None, fold=False):
+        self.calls = []
+        self.dims = dims
+        self.failures = list(failures or [])
+        self.fold = fold
+
+    def embed_content(self, *, model, contents, config):
+        self.calls.append({"model": model, "contents": list(contents), "config": config})
+        if self.failures:
+            raise self.failures.pop(0)
+        count = 1 if self.fold else len(contents)
+        return pytypes.SimpleNamespace(
+            embeddings=[pytypes.SimpleNamespace(values=[float(i)] * self.dims) for i in range(count)]
+        )
+
+
+class EmbeddingProviderTests(unittest.TestCase):
+    def setUp(self):
+        from app.services import embeddings
+
+        self.embeddings = embeddings
+
+    def _gemini(self, models, dims=4):
+        client = pytypes.SimpleNamespace(models=models)
+        return self.embeddings.GeminiEmbedder("gemini-embedding-001", dims, client=client, sleep=lambda s: None)
+
+    def test_defaults_are_cloud_friendly(self):
+        self.assertEqual(settings.EMBEDDING_PROVIDER, "gemini")
+        self.assertEqual(settings.GEMINI_EMBEDDING_MODEL, "gemini-embedding-001")
+        self.assertEqual(settings.EMBEDDING_DIMENSIONS, 768)
+        embedder = self.embeddings.get_embedder()
+        self.assertIsInstance(embedder, self.embeddings.GeminiEmbedder)
+        self.assertEqual(embedder.dimensions, 768)
+
+    def test_documents_are_batched_with_document_task_type(self):
+        models = FakeEmbedModels()
+        vectors = self._gemini(models).embed_documents([f"chunk {i}" for i in range(150)])
+
+        self.assertEqual(len(vectors), 150)
+        self.assertEqual([len(c["contents"]) for c in models.calls], [100, 50])
+        config = models.calls[0]["config"]
+        self.assertEqual(config.task_type, "RETRIEVAL_DOCUMENT")
+        self.assertEqual(config.output_dimensionality, 4)
+        self.assertEqual(models.calls[0]["model"], "gemini-embedding-001")
+
+    def test_query_uses_query_task_type(self):
+        models = FakeEmbedModels()
+        vector = self._gemini(models).embed_query("what is a variable?")
+        self.assertEqual(vector, [0.0] * 4)
+        self.assertEqual(models.calls[0]["config"].task_type, "RETRIEVAL_QUERY")
+
+    def test_empty_document_list_makes_no_call(self):
+        models = FakeEmbedModels()
+        self.assertEqual(self._gemini(models).embed_documents([]), [])
+        self.assertEqual(models.calls, [])
+
+    def test_folded_batch_is_rejected(self):
+        # gemini-embedding-2 returns one vector for a multi-text request.
+        with self.assertRaises(RuntimeError):
+            self._gemini(FakeEmbedModels(fold=True)).embed_documents(["a", "b"])
+
+    def test_wrong_dimension_is_rejected(self):
+        with self.assertRaises(RuntimeError):
+            self._gemini(FakeEmbedModels(dims=3), dims=4).embed_query("q")
+
+    def test_rate_limit_is_retried(self):
+        models = FakeEmbedModels(failures=[make_rate_limit_error("gemini-embedding-001")])
+        self.assertEqual(len(self._gemini(models).embed_documents(["a"])), 1)
+        self.assertEqual(len(models.calls), 2)
+
+    def test_ingestion_waits_for_the_servers_retry_delay(self):
+        # Live: free tier allows 100 embedded texts/minute and asks for ~34s.
+        error = genai_errors.ClientError(
+            429,
+            {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "Quota exceeded. Please retry in 34.7s.",
+                       "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "34s"}]}},
+        )
+        waits = []
+        client = pytypes.SimpleNamespace(models=FakeEmbedModels(failures=[error]))
+        embedder = self.embeddings.GeminiEmbedder("gemini-embedding-001", 4, client=client, sleep=waits.append)
+        with self.assertLogs("app.services.embeddings", level="WARNING"):
+            embedder.embed_documents(["a"])
+        self.assertEqual(waits, [35.0])
+
+    def test_retry_delay_is_capped_and_falls_back_to_backoff(self):
+        delay = self.embeddings.retry_delay_seconds
+        self.assertEqual(delay(make_rate_limit_error(), attempt=0), 2.0)
+        self.assertEqual(delay(make_rate_limit_error(), attempt=2), 8.0)
+        huge = genai_errors.ClientError(
+            429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "x",
+                            "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "900s"}]}}
+        )
+        self.assertEqual(delay(huge, attempt=0), self.embeddings.MAX_RETRY_WAIT_SECONDS)
+
+    def test_query_does_not_wait_long_when_rate_limited(self):
+        # A learner should get a quick 503, not a minute-long hang.
+        error = genai_errors.ClientError(
+            429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "x",
+                            "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "34s"}]}}
+        )
+        waits = []
+        client = pytypes.SimpleNamespace(models=FakeEmbedModels(failures=[error, error]))
+        embedder = self.embeddings.GeminiEmbedder("gemini-embedding-001", 4, client=client, sleep=waits.append)
+        with self.assertLogs("app.services.embeddings", level="WARNING"), self.assertRaises(genai_errors.ClientError):
+            embedder.embed_query("q")
+        self.assertLessEqual(sum(waits), self.embeddings.QUERY_MAX_WAIT_SECONDS)
+
+    def test_other_errors_are_not_retried(self):
+        models = FakeEmbedModels(failures=[make_model_not_found_error("gemini-embedding-001")])
+        with self.assertRaises(genai_errors.ClientError):
+            self._gemini(models).embed_query("q")
+        self.assertEqual(len(models.calls), 1)
+
+    def test_local_provider_wraps_sentence_transformer(self):
+        class FakeST:
+            def encode(self, texts):
+                if isinstance(texts, str):
+                    return [0.5, 0.25]
+                return [[0.5, 0.25] for _ in texts]
+
+        local = self.embeddings.LocalEmbedder(model=FakeST())
+        self.assertEqual(local.dimensions, 1024)
+        self.assertEqual(local.embed_query("q"), [0.5, 0.25])
+        self.assertEqual(local.embed_documents(["a", "b"]), [[0.5, 0.25], [0.5, 0.25]])
+
+    def test_unknown_provider_raises(self):
+        with self.assertRaises(ValueError):
+            self.embeddings.get_embedder("openai")
+
+    def test_cloud_mode_never_imports_torch(self):
+        import subprocess
+
+        code = (
+            "import sys; import app.main, Generate_Course, reingest_courses; "
+            "from app.services import embeddings, rag_service; embeddings.get_embedder(); "
+            "bad = [m for m in ('torch', 'sentence_transformers') if m in sys.modules]; "
+            "print(bad); sys.exit(1 if bad else 0)"
+        )
+        result = subprocess.run([sys.executable, "-c", code], cwd=BASE_DIR, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class VectorStoreTests(unittest.TestCase):
+    def setUp(self):
+        from app.services import vector_store
+
+        self.vs = vector_store
+
+    def _client(self, existing_size=None):
+        client = mock.Mock()
+        client.collection_exists.return_value = existing_size is not None
+        client.get_collection.return_value = pytypes.SimpleNamespace(
+            config=pytypes.SimpleNamespace(params=pytypes.SimpleNamespace(vectors=pytypes.SimpleNamespace(size=existing_size)))
+        )
+        return client
+
+    def test_creates_collection_with_model_dimensions_and_indexes(self):
+        client = self._client()
+        self.assertEqual(self.vs.ensure_collection(768, client=client, name="C"), "created")
+        params = client.create_collection.call_args.kwargs["vectors_config"]
+        self.assertEqual(params.size, 768)
+        indexed = [c.kwargs["field_name"] for c in client.create_payload_index.call_args_list]
+        self.assertEqual(indexed, ["course_title", "step_id"])
+
+    def test_matching_collection_is_left_alone(self):
+        client = self._client(768)
+        self.assertEqual(self.vs.ensure_collection(768, client=client, name="C"), "exists")
+        client.delete_collection.assert_not_called()
+        client.create_collection.assert_not_called()
+
+    def test_dimension_mismatch_fails_without_deleting(self):
+        client = self._client(1024)
+        with self.assertRaises(self.vs.CollectionDimensionError) as ctx:
+            self.vs.ensure_collection(768, client=client, name="C")
+        self.assertIn("--recreate-collection", str(ctx.exception))
+        client.delete_collection.assert_not_called()
+
+    def test_dimension_mismatch_with_recreate_rebuilds(self):
+        client = self._client(1024)
+        with self.assertLogs("app.services.vector_store", level="WARNING"):
+            self.assertEqual(self.vs.ensure_collection(768, recreate=True, client=client, name="C"), "recreated")
+        client.delete_collection.assert_called_once_with("C")
+        self.assertEqual(client.create_collection.call_args.kwargs["vectors_config"].size, 768)
+
+    def test_pipeline_sizes_collection_from_active_embedder(self):
+        with mock.patch.object(Generate_Course, "get_embedder", return_value=FakeEmbedder()), \
+                mock.patch.object(Generate_Course, "get_qdrant_client", return_value="client"), \
+                mock.patch.object(Generate_Course.vector_store, "ensure_collection", return_value="exists") as ensure:
+            Generate_Course.ensure_collection(recreate=True)
+        ensure.assert_called_once_with(2, recreate=True, client="client")
+
+    def test_reingest_cli_reports_mismatch_and_stops(self):
+        import contextlib
+        import io as _io
+        import tempfile
+
+        import reingest_courses
+        from app.services.vector_store import CollectionDimensionError
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        err = _io.StringIO()
+        with mock.patch.object(Generate_Course, "ensure_collection", side_effect=CollectionDimensionError("size differs")), \
+                contextlib.redirect_stdout(_io.StringIO()), contextlib.redirect_stderr(err):
+            code = reingest_courses.main(["--base-dir", tmp.name])
+        self.assertEqual(code, 3)
+        self.assertIn("size differs", err.getvalue())
+
+    def test_reingest_cli_rejects_dry_run_with_recreate(self):
+        import contextlib
+        import io as _io
+
+        import reingest_courses
+
+        with contextlib.redirect_stderr(_io.StringIO()), self.assertRaises(SystemExit):
+            reingest_courses.main(["--dry-run", "--recreate-collection"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

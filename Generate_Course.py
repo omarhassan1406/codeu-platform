@@ -12,8 +12,10 @@ from qdrant_client.http import models as rest
 from app.core.config import settings
 from app.core.console import configure_console
 from app.core.course_paths import MANIFEST_FILENAME, ROADMAP_FILENAME, course_dir, lesson_filename
-from app.services.ai_clients import get_embedding_model, get_qdrant_client
+from app.services import vector_store
+from app.services.ai_clients import get_qdrant_client
 from app.services.chunking import WordChunker, get_chunker
+from app.services.embeddings import get_embedder
 from app.services.gemini_service import generate_content_with_fallback
 
 configure_console()
@@ -40,15 +42,13 @@ class IngestionError(RuntimeError):
     """Lesson chunks could not be stored in Qdrant."""
 
 
-def ensure_collection() -> None:
-    """Create the Qdrant collection if needed. Fails fast if Qdrant is unreachable,
-    before any generation tokens are spent."""
-    client = get_qdrant_client()
-    if not client.collection_exists(COLLECTION_NAME):
-        client.create_collection(
-            collection_name=COLLECTION_NAME,
-            vectors_config=rest.VectorParams(size=1024, distance=rest.Distance.COSINE),
-        )
+def ensure_collection(recreate: bool = False) -> str:
+    """Create the Qdrant collection sized for the active embedding model.
+
+    Fails fast (before any generation tokens are spent) if Qdrant is
+    unreachable or the collection holds vectors of a different size.
+    """
+    return vector_store.ensure_collection(get_embedder().dimensions, recreate=recreate, client=get_qdrant_client())
 
 
 # ==========================================
@@ -265,12 +265,13 @@ def ingest_lesson_to_qdrant_with_retry(course_title: str, section_title: str, st
     print(f"   🧠 [RAG] جاري تقطيع ورفع محتوى الدرس {step_id} إلى Qdrant Cloud...")
     chunker = get_chunker()
     chunks = chunker.split(content)
-    embedding_model = get_embedding_model()
+    embedder = get_embedder()
     qdrant_client = get_qdrant_client()
+    # One batched call per lesson instead of one call per chunk.
+    vectors = embedder.embed_documents(chunks)
 
     points = []
-    for idx, chunk in enumerate(chunks):
-        vector = embedding_model.encode(chunk).tolist()
+    for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
         points.append(
             rest.PointStruct(
                 id=make_point_id(course_title, step_id, idx),
@@ -282,6 +283,7 @@ def ingest_lesson_to_qdrant_with_retry(course_title: str, section_title: str, st
                     "step_title": step_title,
                     "chunk_index": idx,
                     "chunk_strategy": chunker.name,
+                    "embedding_model": f"{embedder.name}:{embedder.model}:{embedder.dimensions}",
                     "text": chunk
                 }
             )

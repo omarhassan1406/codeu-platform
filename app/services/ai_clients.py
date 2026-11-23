@@ -1,7 +1,9 @@
 """Lazily created clients for external AI services.
 
-Nothing heavy happens at import time: the bge-m3 embedding model (several GB)
-and the network clients are built on first use and cached for the process.
+Nothing heavy happens at import time: network clients are built on first use
+and cached for the process. The local bge-m3 model (several GB, needs torch and
+sentence-transformers from requirements-local.txt) loads only when
+EMBEDDING_PROVIDER=local.
 """
 
 import logging
@@ -11,15 +13,21 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
+# bge-m3 produces fixed 1024-dimensional vectors.
+LOCAL_EMBEDDING_DIMENSIONS = 1024
 
 
 @lru_cache(maxsize=1)
 def get_embedding_model():
-    from sentence_transformers import SentenceTransformer
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as error:
+        raise RuntimeError(
+            "EMBEDDING_PROVIDER=local needs sentence-transformers: pip install -r requirements-local.txt"
+        ) from error
 
-    logger.info("Loading embedding model %s ...", EMBEDDING_MODEL_NAME)
-    return SentenceTransformer(EMBEDDING_MODEL_NAME)
+    logger.info("Loading embedding model %s ...", settings.LOCAL_EMBEDDING_MODEL)
+    return SentenceTransformer(settings.LOCAL_EMBEDDING_MODEL)
 
 
 @lru_cache(maxsize=1)

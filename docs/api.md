@@ -57,16 +57,30 @@ Errors: `404` with `{"detail": "Course not found"}` or `{"detail": "Lesson not f
 - `404` with `{"detail": "Job not found"}`: jobs live in server memory, so a
   restart forgets them. The course folder's `manifest.json` still records progress.
 
-## Re-ingesting courses
+## Embeddings and re-ingesting courses
 
-`reingest_courses.py` re-chunks saved lessons with the configured chunker and
-replaces each lesson's Qdrant points (delete by course + step, then upsert with
-deterministic IDs). Run with `--dry-run` first to see chunk counts.
+Embeddings come from the Gemini API by default (`EMBEDDING_PROVIDER=gemini`,
+`gemini-embedding-001`, 768 dims), so the server needs no local model, torch
+or GPU. `EMBEDDING_PROVIDER=local` switches to BAAI/bge-m3 (1024 dims) after
+`pip install -r requirements-local.txt`.
+
+The Qdrant collection's vector size must match the embedding model. On
+startup of ingestion, a mismatch stops with a message instead of mixing
+vectors. Rebuild the collection after changing provider or dimensions.
+
+`reingest_courses.py` re-chunks saved lessons with the configured chunker,
+embeds them, and replaces each lesson's Qdrant points (delete by course + step,
+then upsert with deterministic IDs). Run with `--dry-run` first to see chunk
+counts.
 
 ```
 .venv\Scripts\python reingest_courses.py --dry-run
 .venv\Scripts\python reingest_courses.py --course Programming_in_Python_for_Beginners_to_Advanced
+.venv\Scripts\python reingest_courses.py --recreate-collection   # after a provider/dimension change
 ```
+
+`--recreate-collection` deletes every stored chunk, so re-ingest every course
+the tutor should answer for.
 
 ## Onboarding suggestions
 

@@ -1,0 +1,4 @@
+# Optional: local models (EMBEDDING_PROVIDER=local and/or RERANKER=bge).
+# Pulls in torch and downloads multi-GB models on first use.
+-r requirements.txt
+sentence-transformers>=3.0

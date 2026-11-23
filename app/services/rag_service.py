@@ -4,7 +4,8 @@ from qdrant_client.http import models as rest
 
 from app.core.config import settings
 from app.schemas.rag import RetrievedChunk
-from app.services.ai_clients import get_embedding_model, get_qdrant_client
+from app.services.ai_clients import get_qdrant_client
+from app.services.embeddings import get_embedder
 from app.services.reranker import NoOpReranker, Reranker, get_reranker
 
 __all__ = ["RagUnavailableError", "RetrievedChunk", "search_course_rag"]
@@ -38,7 +39,7 @@ def search_course_rag(
     fetch_limit = max(limit, settings.RAG_RERANK_CANDIDATES) if reranking else limit
 
     try:
-        query_vector = get_embedding_model().encode(student_question).tolist()
+        query_vector = get_embedder().embed_query(student_question)
         response = get_qdrant_client().query_points(
             collection_name=settings.COLLECTION_NAME,
             query=query_vector,

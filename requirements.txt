@@ -4,10 +4,9 @@ uvicorn[standard]>=0.30
 pydantic>=2.7
 pydantic-settings>=2.3
 
-# AI / RAG
+# AI / RAG (embeddings come from the Gemini API by default; no torch needed)
 google-genai>=1.0
 qdrant-client>=1.12
-sentence-transformers>=3.0
 
 # Course review UI (course_viewer_ui.py)
 streamlit>=1.38
