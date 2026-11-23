@@ -42,6 +42,50 @@ function LoadingLines() {
   )
 }
 
+function LectureIcon({ playing }) {
+  return playing ? (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="h-3.5 w-3.5">
+      <rect x="6.5" y="6.5" width="11" height="11" rx="2" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="h-3.5 w-3.5">
+      <path d="M8 5.5v13l11-6.5-11-6.5Z" />
+    </svg>
+  )
+}
+
+// The professor walks through the lesson aloud. It yields to the learner:
+// raising a hand or asking stops the lecture (every new request stops audio).
+function ExplainControl({ tutor }) {
+  const busy = tutor.preparingLecture
+  const playing = tutor.lecturing
+  const label = busy ? 'Preparing explanation…' : playing ? 'Stop explanation' : 'Explain this lesson'
+
+  return (
+    <div className="absolute right-4 top-4 z-20 flex max-w-[min(320px,calc(100%-2rem))] flex-col items-end gap-2">
+      <button
+        type="button"
+        onClick={playing ? tutor.stop : tutor.explainLesson}
+        disabled={busy}
+        aria-pressed={playing}
+        className={`flex items-center gap-2 rounded-full border px-4 py-2 text-[13px] font-bold shadow-[0_10px_30px_-12px_rgba(0,0,0,0.8)] backdrop-blur transition disabled:cursor-wait ${
+          playing
+            ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25'
+            : 'border-white/15 bg-abyss-800/90 text-white hover:border-ember-400/60 hover:bg-abyss-750'
+        }`}
+      >
+        {busy ? <span className="status-pulse h-2 w-2 rounded-full bg-amber-300" /> : <LectureIcon playing={playing} />}
+        {label}
+      </button>
+      {tutor.lectureError && (
+        <p role="alert" className="rounded-lg bg-red-500/15 px-3 py-1.5 text-right text-[12.5px] text-red-100">
+          {tutor.lectureError}
+        </p>
+      )}
+    </div>
+  )
+}
+
 // Movie-style subtitles inside the stage's bottom edge.
 function Captions({ caption, captionKey, status }) {
   const [hidden, setHidden] = useState(false)
@@ -103,7 +147,7 @@ export default function LessonStage({ lesson, loading, error, onRetry, onNavigat
   } else {
     const markdown = stripSavedHeader(lesson.content_markdown, lesson.section_title, lesson.title)
     body = (
-      <article className="mx-auto w-full max-w-[74ch] px-6 pb-56 pt-10 sm:px-10 lg:pt-12">
+      <article className="mx-auto w-full max-w-[74ch] px-6 pb-56 pt-20 sm:px-10">
         <Suspense fallback={<LoadingLines />}>
           <LessonContent markdown={markdown} />
         </Suspense>
@@ -144,6 +188,7 @@ export default function LessonStage({ lesson, loading, error, onRetry, onNavigat
       <div ref={scrollRef} className="scrollbar-thin h-full overflow-y-auto lg:pl-[150px] xl:pl-[190px] 2xl:pl-0">
         {body}
       </div>
+      {lesson && !loading && !error && <ExplainControl tutor={tutor} />}
       <Captions caption={tutor.caption} captionKey={tutor.captionKey} status={tutor.status} />
     </section>
   )

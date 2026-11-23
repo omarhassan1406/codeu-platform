@@ -171,3 +171,49 @@ voices fail. Text is limited to `TTS_MAX_CHARS` (default 3000).
 The classroom sends the answer's caption lines as the text, so captions and
 audio cover the same words, and advances captions by each line's share of the
 audio duration.
+
+## Explain lesson
+
+`POST /tutor/explain-lesson` with `{"course_title", "step_id"}` returns a
+spoken walkthrough of that lesson:
+
+```json
+{"course_id": "...", "step_id": "1.2", "title": "Variables and Basic Data Types",
+ "script": "plain spoken text, no Markdown", "cached": false}
+```
+
+- The lesson's own text is the only source; the script restates it in the
+  lesson's language (200-350 words, at most `LECTURE_MAX_CHARS`).
+- Scripts are cached under `DATA_DIR/narrations/` keyed by a hash of the
+  lesson text, prompt version and model, so each lesson costs one generation
+  until it changes.
+- `404` unknown course/lesson, `502` the model failed or refused.
+- Does not use the learner's question quota.
+
+The classroom speaks the script in segments (first sound in ~3s instead of
+waiting for the whole MP3) and stops it when the learner raises a hand.
+
+## Learners, progress and quota
+
+Learners are anonymous for now: send `X-Learner-Id` (8-64 letters, digits or
+dashes; the web app stores a random UUID). Data lives in SQLite at
+`LEARNER_DB_PATH` behind the `LearnerRepository` interface
+(`app/services/learner_store.py`), which a Supabase/Postgres implementation
+can replace.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET/PUT | `/learners/me/profile` | `LearnerProfile` (same schema as onboarding) |
+| GET | `/learners/me/progress` | `CourseProgress[]` for courses with progress |
+| GET | `/learners/me/progress/{course_id}` | `{course_id, completed_steps, total_lessons, percent}` |
+| POST/DELETE | `/learners/me/progress/{course_id}/lessons/{step_id}/complete` | mark / unmark |
+| GET | `/learners/me/quota` | `{limit, used, remaining, resets_at}` |
+
+Missing or invalid `X-Learner-Id` returns `400`; unknown course or lesson `404`.
+
+Daily question quota: `/tutor/raise-hand` with `X-Learner-Id` allows
+`DAILY_QUESTION_LIMIT` answered questions per UTC day (default 3, `0` =
+unlimited). The response carries `questions_remaining`; over the limit it
+returns `429` with a learner-safe `detail`. Failed answers (502/503) do not
+count. Requests without the header are not tracked (to be enforced once real
+sign-in exists).

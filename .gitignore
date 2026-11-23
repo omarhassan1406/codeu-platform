@@ -19,3 +19,6 @@ build/
 # Local tool caches
 graphify-out/cache/
 .claude/settings.local.json
+
+# Runtime data: learner database, narration cache
+data/

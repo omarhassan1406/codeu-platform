@@ -133,6 +133,14 @@ def list_courses(base_dir: str | Path | None = None, status: str | None = None) 
     return courses
 
 
+def find_course_id(course_title: str, base_dir: str | Path | None = None) -> str:
+    """Course folder for a course title (the tutor API identifies courses by title)."""
+    for course in list_courses(base_dir):
+        if course.title == course_title:
+            return course.course_id
+    raise CourseNotFoundError(course_title)
+
+
 def get_course(course_id: str, base_dir: str | Path | None = None) -> CourseDetail:
     base = _base_dir(base_dir)
     detail = _safe_detail(course_id, _resolve_course_dir(course_id, base))

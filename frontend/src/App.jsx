@@ -28,6 +28,9 @@ export default function App() {
       setSuggestions(result.suggestions)
       setProfile(nextProfile)
       saveJSON('profile', nextProfile)
+      // Best effort: the server copy is for later personalisation; the
+      // onboarding flow does not depend on it.
+      api.saveProfile(nextProfile).catch(() => {})
       setView('suggestions')
     } catch (error) {
       setSuggestError(error.message)

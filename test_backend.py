@@ -1987,5 +1987,313 @@ class VoiceApiTests(unittest.TestCase):
         self.assertEqual(settings.TTS_VOICE_EN, "en-US-AndrewNeural")
         self.assertEqual(settings.TTS_VOICE_EN_FALLBACK, "en-US-AriaNeural")
 
+# =====================================================================
+# Phase 4: learner persistence, quota, explain-lesson
+# =====================================================================
+
+LEARNER = "learner-0001-test"
+OTHER_LEARNER = "learner-0002-test"
+
+
+def make_repo(path=":memory:"):
+    from app.services.learner_store import SQLiteLearnerRepository
+
+    return SQLiteLearnerRepository(path)
+
+
+class LearnerRepositoryTests(unittest.TestCase):
+    def setUp(self):
+        self.repo = make_repo()
+
+    def test_profile_round_trip_and_overwrite(self):
+        self.assertIsNone(self.repo.get_profile(LEARNER))
+        self.repo.save_profile(LEARNER, {"interests": ["Python"], "level": "beginner"})
+        self.repo.save_profile(LEARNER, {"interests": ["Calculus"], "level": "advanced"})
+        self.assertEqual(self.repo.get_profile(LEARNER), {"interests": ["Calculus"], "level": "advanced"})
+        self.assertIsNone(self.repo.get_profile(OTHER_LEARNER))
+
+    def test_lesson_completion_is_idempotent_and_per_course(self):
+        self.repo.mark_lesson_complete(LEARNER, "Py", "1.1")
+        self.repo.mark_lesson_complete(LEARNER, "Py", "1.1")
+        self.repo.mark_lesson_complete(LEARNER, "Py", "1.2")
+        self.repo.mark_lesson_complete(LEARNER, "Calc", "2.1")
+        self.assertEqual(self.repo.completed_steps(LEARNER, "Py"), ["1.1", "1.2"])
+        self.assertEqual(self.repo.all_completed(LEARNER), {"Calc": ["2.1"], "Py": ["1.1", "1.2"]})
+        self.assertEqual(self.repo.completed_steps(OTHER_LEARNER, "Py"), [])
+
+    def test_lesson_can_be_marked_incomplete(self):
+        self.repo.mark_lesson_complete(LEARNER, "Py", "1.1")
+        self.repo.mark_lesson_incomplete(LEARNER, "Py", "1.1")
+        self.assertEqual(self.repo.completed_steps(LEARNER, "Py"), [])
+
+    def test_question_counts_are_per_learner_and_day(self):
+        self.assertEqual(self.repo.questions_used(LEARNER, "2026-11-23"), 0)
+        self.assertEqual(self.repo.record_question(LEARNER, "2026-11-23"), 1)
+        self.assertEqual(self.repo.record_question(LEARNER, "2026-11-23"), 2)
+        self.assertEqual(self.repo.questions_used(LEARNER, "2026-11-24"), 0)
+        self.assertEqual(self.repo.questions_used(OTHER_LEARNER, "2026-11-23"), 0)
+
+    def test_data_survives_reopening_the_database(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "nested", "codeu.db")
+        first = make_repo(path)
+        first.save_profile(LEARNER, {"interests": ["Python"]})
+        first.mark_lesson_complete(LEARNER, "Py", "1.1")
+        first.record_question(LEARNER, "2026-11-23")
+        first.close()
+        second = make_repo(path)
+        self.addCleanup(second.close)
+        self.assertEqual(second.get_profile(LEARNER), {"interests": ["Python"]})
+        self.assertEqual(second.completed_steps(LEARNER, "Py"), ["1.1"])
+        self.assertEqual(second.questions_used(LEARNER, "2026-11-23"), 1)
+
+
+class QuotaTests(unittest.TestCase):
+    def setUp(self):
+        from app.services import quota
+
+        self.quota = quota
+        self.repo = make_repo()
+
+    def test_status_counts_down_and_resets_at_utc_midnight(self):
+        from datetime import datetime, timezone
+
+        now = datetime(2026, 11, 23, 15, 30, tzinfo=timezone.utc)
+        with mock.patch.object(settings, "DAILY_QUESTION_LIMIT", 3):
+            self.repo.record_question(LEARNER, "2026-11-23")
+            status = self.quota.quota_status(self.repo, LEARNER, now=now)
+        self.assertEqual((status.limit, status.used, status.remaining), (3, 1, 2))
+        self.assertEqual(status.resets_at, "2026-11-24T00:00:00+00:00")
+
+    def test_zero_limit_means_unlimited(self):
+        with mock.patch.object(settings, "DAILY_QUESTION_LIMIT", 0):
+            for _ in range(5):
+                self.repo.record_question(LEARNER, self.quota.utc_day())
+            status = self.quota.quota_status(self.repo, LEARNER)
+        self.assertIsNone(status.limit)
+        self.assertIsNone(status.remaining)
+
+    def test_default_limit_matches_freemium_design(self):
+        self.assertEqual(settings.DAILY_QUESTION_LIMIT, 3)
+
+
+class LearnerApiBase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def setUp(self):
+        import tempfile
+
+        from app.services.learner_store import get_learner_repository
+
+        self.repo = make_repo()
+        app.dependency_overrides[get_learner_repository] = lambda: self.repo
+        self.addCleanup(app.dependency_overrides.clear)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.courses_dir = tmp.name
+        write_course(tmp.name, "Py_Course", make_roadmap_dict(title="Py Course"), manifest={"status": "complete"})
+        for name, value in (("GENERATED_COURSES_DIR", tmp.name), ("DATA_DIR", Path(tmp.name) / "data")):
+            patcher = mock.patch.object(settings, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def headers(self, learner=LEARNER):
+        return {"X-Learner-Id": learner}
+
+
+class LearnerApiTests(LearnerApiBase):
+    def test_learner_id_header_is_required_and_validated(self):
+        self.assertEqual(self.client.get("/api/v1/learners/me/quota").status_code, 400)
+        for bad in ("short", "has spaces in it", "x" * 65, "../../etc/passwd"):
+            with self.subTest(bad=bad):
+                response = self.client.get("/api/v1/learners/me/quota", headers={"X-Learner-Id": bad})
+                self.assertEqual(response.status_code, 400)
+
+    def test_profile_put_then_get(self):
+        self.assertEqual(self.client.get("/api/v1/learners/me/profile", headers=self.headers()).status_code, 404)
+        profile = {"interests": ["Python", "python", "Calculus"], "level": "beginner", "background": "student"}
+        response = self.client.put("/api/v1/learners/me/profile", json=profile, headers=self.headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["interests"], ["Python", "Calculus"])  # schema dedupes
+        stored = self.client.get("/api/v1/learners/me/profile", headers=self.headers()).json()
+        self.assertEqual(stored["level"], "beginner")
+        self.assertEqual(self.client.get("/api/v1/learners/me/profile", headers=self.headers(OTHER_LEARNER)).status_code, 404)
+
+    def test_profile_validation(self):
+        response = self.client.put("/api/v1/learners/me/profile", json={"interests": [], "level": "beginner"}, headers=self.headers())
+        self.assertEqual(response.status_code, 422)
+
+    def test_completing_lessons_reports_progress(self):
+        url = "/api/v1/learners/me/progress/Py_Course/lessons/1.1/complete"
+        first = self.client.post(url, headers=self.headers())
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json(), {"course_id": "Py_Course", "completed_steps": ["1.1"], "total_lessons": 8, "percent": 12})
+        self.client.post("/api/v1/learners/me/progress/Py_Course/lessons/1.2/complete", headers=self.headers())
+        progress = self.client.get("/api/v1/learners/me/progress/Py_Course", headers=self.headers()).json()
+        self.assertEqual((progress["completed_steps"], progress["percent"]), (["1.1", "1.2"], 25))
+        overview = self.client.get("/api/v1/learners/me/progress", headers=self.headers()).json()
+        self.assertEqual([c["course_id"] for c in overview], ["Py_Course"])
+
+    def test_lesson_can_be_unmarked(self):
+        url = "/api/v1/learners/me/progress/Py_Course/lessons/1.1/complete"
+        self.client.post(url, headers=self.headers())
+        response = self.client.delete(url, headers=self.headers())
+        self.assertEqual(response.json()["completed_steps"], [])
+
+    def test_unknown_course_or_lesson_is_404(self):
+        for url in ("/api/v1/learners/me/progress/Nope/lessons/1.1/complete",
+                    "/api/v1/learners/me/progress/Py_Course/lessons/9.9/complete"):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.post(url, headers=self.headers()).status_code, 404)
+        self.assertEqual(self.client.get("/api/v1/learners/me/progress/Nope", headers=self.headers()).status_code, 404)
+
+    def test_progress_ignores_steps_no_longer_in_the_course(self):
+        self.repo.mark_lesson_complete(LEARNER, "Py_Course", "1.1")
+        self.repo.mark_lesson_complete(LEARNER, "Py_Course", "old-step")
+        progress = self.client.get("/api/v1/learners/me/progress/Py_Course", headers=self.headers()).json()
+        self.assertEqual(progress["completed_steps"], ["1.1"])
+
+    def test_quota_endpoint(self):
+        with mock.patch.object(settings, "DAILY_QUESTION_LIMIT", 3):
+            response = self.client.get("/api/v1/learners/me/quota", headers=self.headers())
+        body = response.json()
+        self.assertEqual((body["limit"], body["used"], body["remaining"]), (3, 0, 3))
+
+
+class RaiseHandQuotaTests(LearnerApiBase):
+    def setUp(self):
+        super().setUp()
+        self.gemini = FakeGeminiClient()
+        for target, name, value in (
+            (gemini_service, "get_gemini_client", mock.Mock(return_value=self.gemini)),
+            (tutor_module, "search_course_rag", mock.Mock(return_value=[RetrievedChunk(text="ctx", score=0.8, step_id="1.1", step_title="T")])),
+            (settings, "DAILY_QUESTION_LIMIT", 3),
+        ):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def ask(self, headers=None):
+        return self.client.post(
+            "/api/v1/tutor/raise-hand",
+            json={"course_title": "Py Course", "step_id": "1.1", "student_question": "What is x?"},
+            headers=headers or {},
+        )
+
+    def test_three_questions_then_429(self):
+        remaining = [self.ask(self.headers()).json()["questions_remaining"] for _ in range(3)]
+        self.assertEqual(remaining, [2, 1, 0])
+        blocked = self.ask(self.headers())
+        self.assertEqual(blocked.status_code, 429)
+        self.assertIn("3", blocked.json()["detail"])
+        self.assertEqual(len(self.gemini.models.calls), 3)  # no generation when blocked
+
+    def test_failed_answers_do_not_use_quota(self):
+        tutor_module.search_course_rag.side_effect = RagUnavailableError("down")
+        self.assertEqual(self.ask(self.headers()).status_code, 503)
+        self.assertEqual(self.repo.questions_used(LEARNER, __import__("app.services.quota", fromlist=["x"]).utc_day()), 0)
+
+    def test_quota_is_per_learner(self):
+        for _ in range(3):
+            self.ask(self.headers())
+        self.assertEqual(self.ask(self.headers(OTHER_LEARNER)).status_code, 200)
+
+    def test_requests_without_learner_id_are_not_counted(self):
+        for _ in range(4):
+            response = self.ask()
+            self.assertEqual(response.status_code, 200)
+            self.assertIsNone(response.json()["questions_remaining"])
+
+    def test_invalid_learner_id_is_rejected(self):
+        self.assertEqual(self.ask({"X-Learner-Id": "bad id"}).status_code, 400)
+
+
+class ExplainLessonTests(LearnerApiBase):
+    def setUp(self):
+        super().setUp()
+        self.gemini = FakeGeminiClient()
+        self.script = "في هذا الدرس نتعلم **المتغيرات**. المتغير اسم يشير إلى قيمة."
+        self.gemini.models.generate_content = mock.Mock(return_value=pytypes.SimpleNamespace(text=self.script))
+        patcher = mock.patch.object(gemini_service, "get_gemini_client", return_value=self.gemini)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def explain(self, course="Py Course", step="1.1"):
+        return self.client.post("/api/v1/tutor/explain-lesson", json={"course_title": course, "step_id": step})
+
+    def test_returns_a_plain_spoken_script_grounded_in_the_lesson(self):
+        response = self.explain()
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual((body["course_id"], body["step_id"], body["title"]), ("Py_Course", "1.1", "Setup 1.1"))
+        self.assertEqual(body["script"], "في هذا الدرس نتعلم المتغيرات. المتغير اسم يشير إلى قيمة.")
+        self.assertFalse(body["cached"])
+        call = self.gemini.models.generate_content.call_args.kwargs
+        self.assertIn("Body 1.1", call["contents"])  # the lesson text is the source
+        self.assertNotIn("## Setup 1.1", call["contents"])  # saved header stripped
+        system = call["config"].system_instruction
+        self.assertIn("نص الدرس", system)
+        self.assertEqual(call["model"], settings.GEMINI_MODEL_NAME)
+
+    def test_second_request_is_served_from_cache(self):
+        self.explain()
+        again = self.explain().json()
+        self.assertTrue(again["cached"])
+        self.assertEqual(self.gemini.models.generate_content.call_count, 1)
+
+    def test_cache_is_invalidated_when_the_lesson_changes(self):
+        from app.core.course_paths import lesson_filename
+
+        self.explain()
+        path = os.path.join(self.courses_dir, "Py_Course", lesson_filename("1.1", "Setup 1.1"))
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\nNew paragraph")
+        self.assertFalse(self.explain().json()["cached"])
+        self.assertEqual(self.gemini.models.generate_content.call_count, 2)
+
+    def test_snake_case_names_survive_cleanup(self):
+        from app.services.lecture_service import to_spoken_text
+
+        self.assertEqual(to_spoken_text("نستخدم my_var_name و **مهم**"), "نستخدم my_var_name و مهم")
+
+    def test_long_scripts_are_cut_at_a_sentence(self):
+        sentence = "هذه جملة شرح طويلة. "
+        self.gemini.models.generate_content.return_value = pytypes.SimpleNamespace(text=sentence * 400)
+        script = self.explain().json()["script"]
+        self.assertLessEqual(len(script), settings.LECTURE_MAX_CHARS)
+        self.assertTrue(script.endswith("."))
+
+    def test_unknown_course_or_lesson_is_404(self):
+        self.assertEqual(self.explain(course="Nope").status_code, 404)
+        self.assertEqual(self.explain(step="9.9").status_code, 404)
+
+    def test_empty_or_refused_generation_is_502(self):
+        for text in ("", "NOT_IN_CONTEXT"):
+            with self.subTest(text=text):
+                self.gemini.models.generate_content.return_value = pytypes.SimpleNamespace(text=text)
+                self.gemini.models.generate_content.side_effect = None
+                with self.assertLogs("app.services.lecture_service", level="WARNING"):
+                    response = self.client.post(
+                        "/api/v1/tutor/explain-lesson", json={"course_title": "Py Course", "step_id": "1.2"}
+                    )
+                self.assertEqual(response.status_code, 502)
+
+    def test_model_failure_is_502(self):
+        self.gemini.models.generate_content.side_effect = ValueError("secret detail")
+        with self.assertLogs(level="ERROR"):
+            response = self.explain(step="1.3")
+        self.assertEqual(response.status_code, 502)
+        self.assertNotIn("secret", response.text)
+
+    def test_explaining_does_not_use_question_quota(self):
+        with mock.patch.object(settings, "DAILY_QUESTION_LIMIT", 1):
+            self.client.post("/api/v1/tutor/explain-lesson", json={"course_title": "Py Course", "step_id": "1.1"}, headers=self.headers())
+        self.assertEqual(self.repo.questions_used(LEARNER, __import__("app.services.quota", fromlist=["x"]).utc_day()), 0)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

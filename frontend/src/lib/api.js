@@ -1,5 +1,7 @@
 // Thin client for the CodeU backend (see docs/api.md).
 // In dev, Vite proxies /api to the FastAPI server, so the default base is ''.
+import { getLearnerId } from './learner'
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
 
 export class ApiError extends Error {
@@ -24,7 +26,10 @@ async function send(path, { method = 'GET', body, form, signal } = {}) {
       method,
       signal,
       // FormData sets its own multipart Content-Type with the boundary.
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      headers: {
+        'X-Learner-Id': getLearnerId(),
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
       body: form ?? (body ? JSON.stringify(body) : undefined),
     })
   } catch (error) {
@@ -39,8 +44,10 @@ async function send(path, { method = 'GET', body, form, signal } = {}) {
     } catch {
       // Non-JSON error body: use the generic message.
     }
-    // Voice endpoints return learner-safe details; prefer them over generic text.
-    const message = path.startsWith('/voice/') && typeof detail === 'string' ? detail : null
+    // Voice endpoints and the daily question limit (429) return learner-safe
+    // details; prefer them over generic text.
+    const safeDetail = path.startsWith('/voice/') || response.status === 429
+    const message = safeDetail && typeof detail === 'string' ? detail : null
     throw new ApiError(message ?? FRIENDLY_ERRORS[response.status] ?? 'Something went wrong on our side.', response.status)
   }
   return response
@@ -79,4 +86,18 @@ export const api = {
   // Text-to-speech (edge-tts). Resolves to an MP3 Blob.
   speak: async (text, { signal } = {}) =>
     (await send('/voice/speak', { method: 'POST', body: { text }, signal })).blob(),
+  // Spoken walkthrough of one lesson. Resolves to { script, title, cached, ... }.
+  explainLesson: ({ courseTitle, stepId }, { signal } = {}) =>
+    request('/tutor/explain-lesson', {
+      method: 'POST',
+      body: { course_title: courseTitle, step_id: stepId },
+      signal,
+    }),
+
+  // Learner state (keyed by the anonymous X-Learner-Id).
+  saveProfile: (profile) => request('/learners/me/profile', { method: 'PUT', body: profile }),
+  getQuota: (options) => request('/learners/me/quota', options),
+  getProgress: (courseId, options) => request(`/learners/me/progress/${enc(courseId)}`, options),
+  completeLesson: (courseId, stepId) =>
+    request(`/learners/me/progress/${enc(courseId)}/lessons/${enc(stepId)}/complete`, { method: 'POST' }),
 }

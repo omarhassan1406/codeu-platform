@@ -93,6 +93,20 @@ const ACTIVITY_TEXT = {
   transcribing: 'Turning your voice into text…',
   answering: 'Checking the lesson for an answer…',
   voice: 'Preparing the professor’s voice…',
+  lecture: 'Preparing the lesson explanation…',
+}
+
+// Freemium allowance: shown only when the server enforces a limit.
+function QuotaLine({ quota }) {
+  if (!quota || quota.limit == null) return null
+  const left = quota.remaining ?? 0
+  return (
+    <p className={`mt-2 text-[12px] font-semibold ${left === 0 ? 'text-amber-200' : 'text-slate-300'}`} aria-live="polite">
+      {left === 0
+        ? 'No questions left today. They reset at midnight UTC.'
+        : `${left} of ${quota.limit} questions left today`}
+    </p>
+  )
 }
 
 function ActivityLine({ activity, heard }) {
@@ -166,6 +180,7 @@ export default function Professor({ tutor, disabled }) {
   const inputRef = useRef(null)
   const recorder = useRecorder()
   const busy = tutor.status === 'thinking'
+  const outOfQuestions = tutor.quota?.remaining === 0
 
   useEffect(() => {
     if (open) inputRef.current?.focus()
@@ -250,6 +265,7 @@ export default function Professor({ tutor, disabled }) {
             <p className="mt-1 text-[12px] leading-5 text-slate-400">
               Answers come only from this course. If it isn&apos;t covered, the professor will say so.
             </p>
+            <QuotaLine quota={tutor.quota} />
 
             <form onSubmit={submit} className="mt-3 flex items-end gap-2">
               <label className="sr-only" htmlFor="tutor-question">
@@ -279,7 +295,7 @@ export default function Professor({ tutor, disabled }) {
               <button
                 type="button"
                 onClick={toggleRecording}
-                disabled={busy}
+                disabled={busy || (outOfQuestions && !recorder.recording)}
                 aria-pressed={recorder.recording}
                 aria-label={recorder.recording ? 'Stop recording and send' : 'Ask by voice'}
                 className={`relative grid h-11 w-11 shrink-0 place-items-center rounded-xl transition disabled:opacity-50 ${
@@ -293,7 +309,7 @@ export default function Professor({ tutor, disabled }) {
               </button>
               <button
                 type="submit"
-                disabled={busy || question.trim().length < 2}
+                disabled={busy || outOfQuestions || question.trim().length < 2}
                 aria-label="Send question"
                 className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-ember-500 text-white transition hover:bg-ember-400 disabled:bg-abyss-700 disabled:text-slate-500"
               >

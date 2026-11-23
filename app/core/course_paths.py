@@ -21,3 +21,13 @@ def course_dir(base_dir: str | Path, course_title: str) -> Path:
 
 def lesson_filename(step_id: str, step_title: str) -> str:
     return f"step_{sanitize_filename(step_id, max_length=20)}_{sanitize_filename(step_title)}.md"
+
+
+def strip_lesson_header(text: str, section_title: str, step_title: str) -> str:
+    """Remove the '# section / ## step' header the pipeline adds when saving.
+
+    The pipeline ingests (and the tutor narrates) the lesson body without it.
+    """
+    header = f"# {section_title}\n## {step_title}\n\n"
+    normalized = text.replace("\r\n", "\n")
+    return normalized[len(header):] if normalized.startswith(header) else normalized

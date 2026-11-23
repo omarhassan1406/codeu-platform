@@ -1,11 +1,14 @@
 import logging
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from google.genai import types
 from pydantic import BaseModel, Field
 
+from app.api.deps import optional_learner_id
 from app.core.config import settings
+from app.services import course_catalog, lecture_service, quota
 from app.services.gemini_service import generate_content_with_fallback
+from app.services.learner_store import LearnerRepository, get_learner_repository
 from app.services.rag_service import RagUnavailableError, RetrievedChunk, search_course_rag
 
 router = APIRouter()
@@ -41,6 +44,22 @@ class RaiseHandResponse(BaseModel):
     answer_text: str
     avatar_state: str
     context_used: list[str]
+    questions_remaining: int | None = Field(
+        None, description="Questions left today for this learner; null when untracked or unlimited"
+    )
+
+
+class ExplainLessonRequest(BaseModel):
+    course_title: str = Field(..., min_length=1, max_length=300)
+    step_id: str = Field(..., min_length=1, max_length=20)
+
+
+class ExplainLessonResponse(BaseModel):
+    course_id: str
+    step_id: str
+    title: str
+    script: str = Field(description="Plain spoken text, grounded only in the lesson")
+    cached: bool
 
 
 def _decline() -> RaiseHandResponse:
@@ -68,8 +87,50 @@ def _is_decline(answer: str) -> bool:
 # Plain ``def`` (not ``async def``): embedding, Qdrant and Gemini calls are all
 # blocking, so FastAPI runs this in its threadpool instead of the event loop.
 @router.post("/raise-hand", response_model=RaiseHandResponse)
-def raise_hand(request: RaiseHandRequest) -> RaiseHandResponse:
-    """Answer a student's question strictly from retrieved course content."""
+def raise_hand(
+    request: RaiseHandRequest,
+    learner_id: str | None = Depends(optional_learner_id),
+    repo: LearnerRepository = Depends(get_learner_repository),
+) -> RaiseHandResponse:
+    """Answer a student's question strictly from retrieved course content.
+
+    With X-Learner-Id, each answered question uses one of the learner's daily
+    questions (DAILY_QUESTION_LIMIT); failures (502/503) do not.
+    """
+    if learner_id is not None:
+        status_now = quota.quota_status(repo, learner_id)
+        if status_now.remaining == 0:
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, quota.limit_message(status_now.limit))
+
+    response = _answer(request)
+
+    if learner_id is not None:
+        repo.record_question(learner_id, quota.utc_day())
+        response.questions_remaining = quota.quota_status(repo, learner_id).remaining
+    return response
+
+
+@router.post("/explain-lesson", response_model=ExplainLessonResponse)
+def explain_lesson(request: ExplainLessonRequest) -> ExplainLessonResponse:
+    """A spoken walkthrough of one lesson, grounded only in that lesson's text.
+
+    Does not use the learner's question quota. Scripts are cached per lesson.
+    """
+    try:
+        lecture = lecture_service.build_lecture(request.course_title, request.step_id)
+    except course_catalog.CourseNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Course not found")
+    except course_catalog.LessonNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Lesson not found")
+    except lecture_service.LectureGenerationError:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The lesson explanation could not be prepared right now.")
+    except Exception:
+        logger.exception("Lecture generation failed (course=%r step=%r)", request.course_title, request.step_id)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The lesson explanation could not be prepared right now.")
+    return ExplainLessonResponse(**lecture.__dict__)
+
+
+def _answer(request: RaiseHandRequest) -> RaiseHandResponse:
     try:
         chunks = search_course_rag(
             course_title=request.course_title,

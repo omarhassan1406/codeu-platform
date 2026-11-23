@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.core.config import settings
-from app.core.course_paths import ROADMAP_FILENAME, lesson_filename
+from app.core.course_paths import ROADMAP_FILENAME, lesson_filename, strip_lesson_header  # noqa: F401 (re-exported)
 from app.services.chunking import get_chunker
 
 logger = logging.getLogger("reingest")
@@ -34,16 +34,6 @@ class CourseReport:
     chunks: int = 0
     missing_lessons: list[str] = field(default_factory=list)
     error: str | None = None
-
-
-def strip_lesson_header(text: str, section_title: str, step_title: str) -> str:
-    """Remove the '# section / ## step' header the pipeline adds when saving.
-
-    The pipeline ingests the lesson body without it, so re-ingestion does the same.
-    """
-    header = f"# {section_title}\n## {step_title}\n\n"
-    normalized = text.replace("\r\n", "\n")
-    return normalized[len(header):] if normalized.startswith(header) else normalized
 
 
 def course_ids(base_dir: Path) -> list[str]:

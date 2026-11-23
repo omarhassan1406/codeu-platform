@@ -121,6 +121,21 @@ class Settings(BaseSettings):
     # ---- Storage -----------------------------------------------------------
     # Where generated courses live (one folder per course).
     GENERATED_COURSES_DIR: Path = PROJECT_ROOT / "generated_courses"
+    # Runtime data that is not committed: learner database, narration cache.
+    DATA_DIR: Path = PROJECT_ROOT / "data"
+    # SQLite file for learner profiles, progress and question quota. The
+    # repository interface (app/services/learner_store.py) is what a future
+    # Supabase/Postgres implementation replaces. ":memory:" works for tests.
+    LEARNER_DB_PATH: str = str(PROJECT_ROOT / "data" / "codeu.db")
+
+    # ---- Learners and quota --------------------------------------------------
+    # Free questions per learner per UTC day (architecture doc: 3/day, more via
+    # rewarded ads later). 0 disables the limit (handy for local development).
+    DAILY_QUESTION_LIMIT: int = Field(3, ge=0, le=1000)
+
+    # ---- Lesson narration ("Explain this lesson") -----------------------------
+    # Longest spoken walkthrough. Stays under TTS_MAX_CHARS so it is spoken whole.
+    LECTURE_MAX_CHARS: int = Field(2800, ge=300, le=10000)
 
     @model_validator(mode="after")
     def _check_consistency(self) -> "Settings":

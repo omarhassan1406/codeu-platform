@@ -18,7 +18,8 @@ export function toSpokenText(markdown) {
     .replace(/```[\s\S]*?(```|$)/g, codeNote)
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/(\*\*|__|\*|_|~~)(?=\S)([\s\S]*?\S)\1/g, '$2')
+    // Single underscores stay: they appear in code names like my_var.
+    .replace(/(\*\*|__|\*|~~)(?=\S)([\s\S]*?\S)\1/g, '$2')
     .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, '')
     .replace(/^\s*[-*_]{3,}\s*$/gm, '')
 }
@@ -60,6 +61,29 @@ function limitSpoken(lines) {
   return kept
 }
 
+// Group caption lines into speech segments (arrays of line indexes). The first
+// is short so playback starts fast; later ones are longer to limit requests.
+const FIRST_SEGMENT_CHARS = 180
+const SEGMENT_CHARS = 420
+
+export function toSegments(lines) {
+  const segments = []
+  let current = []
+  let length = 0
+  lines.forEach((line, i) => {
+    const cap = segments.length === 0 ? FIRST_SEGMENT_CHARS : SEGMENT_CHARS
+    if (current.length && length + line.length > cap) {
+      segments.push(current)
+      current = []
+      length = 0
+    }
+    current.push(i)
+    length += line.length + 1
+  })
+  if (current.length) segments.push(current)
+  return segments
+}
+
 // Each caption gets a share of the audio proportional to its length.
 function captionEnds(lines) {
   const total = lines.reduce((sum, line) => sum + line.length, 0) || 1
@@ -99,7 +123,22 @@ export function useTutor({ courseTitle, stepId }) {
   // What the professor is busy with: 'transcribing' | 'answering' | 'voice' | null
   const [activity, setActivity] = useState(null)
   const [heard, setHeard] = useState(null) // last transcript, shown while answering
+  const [speechKind, setSpeechKind] = useState(null) // 'answer' | 'lecture'
+  const [lectureError, setLectureError] = useState(null)
+  const [quota, setQuota] = useState(null) // { limit, used, remaining, resets_at }
   const requestRef = useRef(0)
+
+  // Daily question allowance, refreshed after every answer.
+  useEffect(() => {
+    let cancelled = false
+    api
+      .getQuota()
+      .then((q) => !cancelled && setQuota(q))
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
   const audioRef = useRef(null)
   const audioUrlsRef = useRef(new Map()) // answer text -> object URL, reused by Replay
 
@@ -132,6 +171,8 @@ export function useTutor({ courseTitle, stepId }) {
     setMode('timer')
     setActivity(null)
     setHeard(null)
+    setSpeechKind(null)
+    setLectureError(null)
   }
 
   // Ignore answers to questions asked about the previous lesson, and silence it.
@@ -172,61 +213,105 @@ export function useTutor({ courseTitle, stepId }) {
         return
       }
 
-      let url = audioUrlsRef.current.get(text)
-      if (!url) {
-        setStatus('thinking') // preparing the voice
-        setActivity('voice')
-        try {
-          url = URL.createObjectURL(await api.speak(lines.join(' ')))
-          audioUrlsRef.current.set(text, url)
-        } catch (err) {
-          if (id !== requestRef.current) return
-          setVoiceNotice(err.message || 'Voice is unavailable right now, showing captions only.')
-          playCaptionsOnly(lines, speakingState)
-          return
+      // Speech is synthesised per segment: the first plays after ~2s while the
+      // next is fetched, instead of waiting ~20s for a whole lecture.
+      const segments = toSegments(lines)
+      const pending = new Map()
+      const fetchSegment = (k) => {
+        if (!pending.has(k)) {
+          const segmentText = segments[k].map((i) => lines[i]).join(' ')
+          const cached = audioUrlsRef.current.get(segmentText)
+          pending.set(
+            k,
+            cached
+              ? Promise.resolve(cached)
+              : api.speak(segmentText).then((blob) => {
+                  const url = URL.createObjectURL(blob)
+                  audioUrlsRef.current.set(segmentText, url)
+                  return url
+                }),
+          )
         }
+        return pending.get(k)
+      }
+
+      setStatus('thinking') // preparing the voice
+      setActivity('voice')
+      let firstUrl
+      try {
+        firstUrl = await fetchSegment(0)
+      } catch (err) {
+        if (id !== requestRef.current) return
+        setVoiceNotice(err.message || 'Voice is unavailable right now, showing captions only.')
+        playCaptionsOnly(lines, speakingState)
+        return
       }
       if (id !== requestRef.current) return
 
-      const ends = captionEnds(lines)
-      const audio = new Audio(url)
-      audioRef.current = audio
-      audio.ontimeupdate = () => {
-        if (!audio.duration || !Number.isFinite(audio.duration)) return
-        const progress = audio.currentTime / audio.duration
-        const index = ends.findIndex((end) => progress < end)
-        setCaptionIndex(index === -1 ? lines.length - 1 : index)
-      }
-      audio.onended = () => {
-        audioRef.current = null
-        setCaptionIndex(-1)
-        setStatus('idle')
-      }
-      audio.onerror = () => {
+      const fallBackToCaptions = (fromLine, notice) => {
         stopAudio()
-        playCaptionsOnly(lines, speakingState)
+        if (notice) setVoiceNotice(notice)
+        playCaptionsOnly(lines, speakingState, fromLine)
+      }
+
+      const playSegment = async (k, url) => {
+        if (id !== requestRef.current) return
+        if (k + 1 < segments.length) fetchSegment(k + 1).catch(() => {}) // prefetch
+        const lineIdx = segments[k]
+        const ends = captionEnds(lineIdx.map((i) => lines[i]))
+        const audio = new Audio(url)
+        audioRef.current = audio
+        audio.ontimeupdate = () => {
+          if (!audio.duration || !Number.isFinite(audio.duration)) return
+          const progress = audio.currentTime / audio.duration
+          const index = ends.findIndex((end) => progress < end)
+          setCaptionIndex(lineIdx[index === -1 ? lineIdx.length - 1 : index])
+        }
+        audio.onended = async () => {
+          if (audioRef.current !== audio) return // stopped meanwhile
+          if (k + 1 >= segments.length) {
+            audioRef.current = null
+            setCaptionIndex(-1)
+            setStatus('idle')
+            return
+          }
+          let nextUrl
+          try {
+            nextUrl = await fetchSegment(k + 1)
+          } catch {
+            if (audioRef.current === audio) fallBackToCaptions(segments[k + 1][0])
+            return
+          }
+          if (audioRef.current !== audio || id !== requestRef.current) return
+          playSegment(k + 1, nextUrl)
+        }
+        audio.onerror = () => {
+          if (audioRef.current === audio) fallBackToCaptions(lineIdx[0])
+        }
+        setCaptionIndex(lineIdx[0])
+        try {
+          await audio.play()
+        } catch {
+          // Autoplay blocked or decode failure: keep the answer readable.
+          if (audioRef.current === audio) {
+            fallBackToCaptions(lineIdx[0], 'The browser blocked audio playback. Press Replay to hear it.')
+          }
+        }
       }
 
       setVoiceNotice(null)
       setActivity(null)
       setMode('audio')
       setCaptions(lines)
-      setCaptionIndex(0)
       setStatus(speakingState)
-      try {
-        await audio.play()
-      } catch {
-        // Autoplay blocked or decode failure: keep the answer readable.
-        if (audioRef.current !== audio) return
-        stopAudio()
-        setVoiceNotice('The browser blocked audio playback. Press Replay to hear the answer.')
-        playCaptionsOnly(lines, speakingState)
-      }
+      await playSegment(0, firstUrl)
     },
     [voiceOn, stopAudio, playCaptionsOnly],
   )
 
   const startListening = useCallback(() => {
+    // Raising a hand cancels anything still being prepared or spoken.
+    requestRef.current += 1
     stopAudio()
     setError(null)
     setCaptionIndex(-1)
@@ -249,15 +334,20 @@ export function useTutor({ courseTitle, stepId }) {
       setCaptionIndex(-1)
       setStatus('thinking')
       setActivity('answering')
+      setSpeechKind('answer')
       try {
         const result = await api.raiseHand({ courseTitle, stepId, question })
         if (id !== requestRef.current) return
         const grounded = result.avatar_state !== 'idle'
         setExchange({ question, answer: result.answer_text, grounded, sources: result.context_used ?? [] })
         setHeard(null)
+        if (result.questions_remaining != null) {
+          setQuota((q) => (q ? { ...q, remaining: result.questions_remaining, used: q.used + 1 } : q))
+        }
         await speak(result.answer_text, grounded ? 'explaining' : 'talking', id)
       } catch (err) {
         if (id !== requestRef.current) return
+        if (err.status === 429) setQuota((q) => (q ? { ...q, remaining: 0 } : q))
         setError(err.message)
         setActivity(null)
         setStatus('idle')
@@ -304,9 +394,34 @@ export function useTutor({ courseTitle, stepId }) {
     [ask, rejectRecording, stopAudio],
   )
 
+  // Spoken walkthrough of the current lesson. Raising a hand (startListening)
+  // or asking stops it, because every new request stops the current audio.
+  const explainLesson = useCallback(async () => {
+    const id = ++requestRef.current
+    stopAudio()
+    setError(null)
+    setLectureError(null)
+    setCaptionIndex(-1)
+    setStatus('thinking')
+    setActivity('lecture')
+    setSpeechKind('lecture')
+    try {
+      const result = await api.explainLesson({ courseTitle, stepId })
+      if (id !== requestRef.current) return
+      await speak(result.script, 'explaining', id)
+    } catch (err) {
+      if (id !== requestRef.current) return
+      setLectureError(err.message)
+      setActivity(null)
+      setSpeechKind(null)
+      setStatus('idle')
+    }
+  }, [courseTitle, stepId, speak, stopAudio])
+
   const replay = useCallback(() => {
     if (!exchange) return
     const id = ++requestRef.current
+    setSpeechKind('answer')
     speak(exchange.answer, exchange.grounded ? 'explaining' : 'talking', id)
   }, [exchange, speak])
 
@@ -334,6 +449,12 @@ export function useTutor({ courseTitle, stepId }) {
     voiceNotice,
     activity,
     heard,
+    quota,
+    lecturing: speaking && speechKind === 'lecture',
+    // Writing the script, then synthesising its voice.
+    preparingLecture: speechKind === 'lecture' && (activity === 'lecture' || activity === 'voice'),
+    lectureError,
+    explainLesson,
     setVoiceOn,
     startListening,
     stop,

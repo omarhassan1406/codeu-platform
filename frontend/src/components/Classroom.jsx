@@ -81,7 +81,25 @@ export default function Classroom({ courseId, onCourseChange, onFindCourses }) {
     activeCourseId && stepId ? api.getLesson(activeCourseId, stepId, { signal }) : Promise.resolve(null),
   )
 
-  const completed = useMemo(() => new Set(completedByCourse[activeCourseId] ?? []), [completedByCourse, activeCourseId])
+  // Server progress is the source of truth; the local copy keeps the UI
+  // instant (optimistic) and covers older sessions saved only in the browser.
+  const progress = useAsync(`progress:${activeCourseId}`, (signal) =>
+    activeCourseId ? api.getProgress(activeCourseId, { signal }).catch(() => null) : Promise.resolve(null),
+  )
+  const serverDone = progress.data?.course_id === activeCourseId ? progress.data.completed_steps : null
+  const completed = useMemo(
+    () => new Set([...(serverDone ?? []), ...(completedByCourse[activeCourseId] ?? [])]),
+    [serverDone, completedByCourse, activeCourseId],
+  )
+
+  // One-time upload of lessons completed before progress lived on the server.
+  const migratedRef = useRef(new Set())
+  useEffect(() => {
+    if (!serverDone || migratedRef.current.has(activeCourseId)) return
+    migratedRef.current.add(activeCourseId)
+    const localOnly = (completedByCourse[activeCourseId] ?? []).filter((step) => !serverDone.includes(step))
+    localOnly.forEach((step) => api.completeLesson(activeCourseId, step).catch(() => {}))
+  }, [serverDone, activeCourseId, completedByCourse])
 
   useEffect(() => {
     if (activeCourseId && activeCourseId !== courseId) onCourseChange(activeCourseId)
@@ -109,6 +127,8 @@ export default function Classroom({ courseId, onCourseChange, onFindCourses }) {
       saveJSON('completed', next)
       return next
     })
+    // Saved locally first; the server call can fail without losing the tick.
+    api.completeLesson(activeCourseId, current.step_id).catch(() => {})
     if (current.next_step_id) selectLesson(current.next_step_id)
   }
 
