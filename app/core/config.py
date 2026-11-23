@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     QDRANT_API_KEY: str = os.getenv("QDRANT_API_KEY", "")
     COLLECTION_NAME: str = "CodeU"
 
+    # RAG grounding: chunks scoring below this cosine similarity are treated as
+    # "not found" so the tutor declines instead of answering from weak context.
+    RAG_TOP_K: int = 3
+    RAG_MIN_SCORE: float = 0.45
+
+    # Course generation completeness rules
+    GENERATION_MAX_ATTEMPTS: int = 3
+    ROADMAP_MIN_STEPS_PER_SECTION: int = 4
+    LESSON_MIN_CHARS: int = 800
+
     class Config:
         env_file = ".env"
         extra = "ignore"  # 👈 هذا السطر يتجاهل أي متغيرات إضافية في ملف الـ .env لتمنع حدوث الخطأ مستقبلاً

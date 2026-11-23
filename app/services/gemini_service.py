@@ -3,7 +3,7 @@ import logging
 from google.genai import types
 
 from app.core.config import settings
-from app.services.ai_clients import gemini_client
+from app.services.ai_clients import get_gemini_client
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def generate_content_with_fallback(
     last_error: Exception | None = None
     for index, model in enumerate(models):
         try:
-            response = gemini_client.models.generate_content(
+            response = get_gemini_client().models.generate_content(
                 model=model,
                 contents=contents,
                 config=config,

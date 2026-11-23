@@ -1,11 +1,13 @@
 # Environment and secret files
 .env
-.env.local
+.env.*
+!.env.example
 
 # Python
 __pycache__/
 *.py[cod]
 venv/
+.venv/
 env/
 
 # Node and Frontend build outputs
@@ -13,3 +15,7 @@ node_modules/
 dist/
 build/
 .tmp-chrome/
+
+# Local tool caches
+graphify-out/cache/
+.claude/settings.local.json

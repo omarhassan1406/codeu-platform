@@ -1,37 +1,74 @@
-from qdrant_client.http import models as rest
-from app.core.config import settings
-from app.services.ai_clients import embedding_model, qdrant_client
+import logging
+from dataclasses import dataclass
 
-def search_course_rag(course_title: str, student_question: str, limit: int = 3) -> list[str]:
+from qdrant_client.http import models as rest
+
+from app.core.config import settings
+from app.services.ai_clients import get_embedding_model, get_qdrant_client
+
+logger = logging.getLogger(__name__)
+
+
+class RagUnavailableError(RuntimeError):
+    """The vector store could not be queried, so no grounded answer is possible."""
+
+
+@dataclass(frozen=True)
+class RetrievedChunk:
+    text: str
+    score: float
+    step_id: str | None = None
+    step_title: str | None = None
+
+
+def search_course_rag(
+    course_title: str,
+    student_question: str,
+    limit: int | None = None,
+    min_score: float | None = None,
+) -> list[RetrievedChunk]:
+    """Search Qdrant for chunks of one course that are relevant to the question.
+
+    Only chunks with a similarity score at or above ``min_score`` are returned,
+    so an empty list means "the course does not cover this". Infrastructure
+    failures raise ``RagUnavailableError`` instead of looking like "no answer".
     """
-    إجراء بحث جراحي في Qdrant مع فلترة الكورس المستهدف لضمان عدم تداخل المعلومات.
-    """
-    query_vector = embedding_model.encode(student_question).tolist()
-    
+    limit = settings.RAG_TOP_K if limit is None else limit
+    min_score = settings.RAG_MIN_SCORE if min_score is None else min_score
+
     try:
-        response = qdrant_client.query_points(
+        query_vector = get_embedding_model().encode(student_question).tolist()
+        response = get_qdrant_client().query_points(
             collection_name=settings.COLLECTION_NAME,
             query=query_vector,
             query_filter=rest.Filter(
                 must=[
                     rest.FieldCondition(
                         key="course_title",
-                        match=rest.MatchValue(value=course_title)
+                        match=rest.MatchValue(value=course_title),
                     )
                 ]
             ),
             limit=limit,
-            with_payload=True
+            score_threshold=min_score,
+            with_payload=True,
         )
-        
-        context_chunks = []
-        for hit in response.points:
-            payload = hit.payload
-            if payload and "text" in payload:
-                context_chunks.append(payload["text"])
-                
-        return context_chunks
-        
-    except Exception as e:
-        print(f"⚠️ خطأ أثناء البحث في Qdrant: {e}")
-        return []
+    except Exception as error:
+        logger.exception("RAG search failed for course %r", course_title)
+        raise RagUnavailableError("Course knowledge base is unavailable") from error
+
+    chunks: list[RetrievedChunk] = []
+    for hit in response.points:
+        payload = hit.payload or {}
+        text = (payload.get("text") or "").strip()
+        if not text or hit.score is None or hit.score < min_score:
+            continue
+        chunks.append(
+            RetrievedChunk(
+                text=text,
+                score=float(hit.score),
+                step_id=payload.get("step_id"),
+                step_title=payload.get("step_title"),
+            )
+        )
+    return chunks

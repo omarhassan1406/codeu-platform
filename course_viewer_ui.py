@@ -2,7 +2,7 @@ import streamlit as st
 import json
 import os
 
-from app.core.filenames import sanitize_filename
+from app.core.course_paths import MANIFEST_FILENAME, ROADMAP_FILENAME, lesson_filename
 
 # تحديد مسار مجلد الكورسات بناءً على مكان وجود ملف الـ UI
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,23 +21,34 @@ st.markdown("استعرض هيكل الكورس، الأقسام، الخطوا�
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# البحث عن ملفات الـ Roadmap الموجودة
-roadmap_files = [f for f in os.listdir(OUTPUT_DIR) if f.endswith("_roadmap.json")]
+# كل كورس في مجلد خاص به يحتوي على roadmap.json
+course_dirs = sorted(
+    d for d in os.listdir(OUTPUT_DIR)
+    if os.path.isfile(os.path.join(OUTPUT_DIR, d, ROADMAP_FILENAME))
+)
 
-if not roadmap_files:
+if not course_dirs:
     st.warning("⚠️ لا توجد كورسات مسجلة حتى الآن في المجلد. قم بتشغيل سكريبت توليد الكورس أولاً.")
 else:
     # قائمة منسدلة لاختيار الكورس في الشريط الجانبي
     st.sidebar.header("📁 إدارة الكورسات")
-    selected_file = st.sidebar.selectbox("اختر الكورس للاستعراض:", roadmap_files)
-    
-    file_path = os.path.join(OUTPUT_DIR, selected_file)
+    selected_course = st.sidebar.selectbox("اختر الكورس للاستعراض:", course_dirs)
+    selected_dir = os.path.join(OUTPUT_DIR, selected_course)
+    file_path = os.path.join(selected_dir, ROADMAP_FILENAME)
     
     with open(file_path, "r", encoding="utf-8") as f:
         roadmap_data = json.load(f)
         
     st.sidebar.markdown(f"**📌 عنوان الكورس:** {roadmap_data.get('course_title')}")
     st.sidebar.markdown(f"**🎯 المستوى:** {roadmap_data.get('target_audience')}")
+    manifest_path = os.path.join(selected_dir, MANIFEST_FILENAME)
+    if os.path.exists(manifest_path):
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        st.sidebar.markdown(
+            f"**🧾 حالة التوليد:** {manifest.get('status')} "
+            f"({len(manifest.get('completed_steps', []))}/{manifest.get('total_steps')})"
+        )
     st.sidebar.markdown("---")
     
     # عرض محتوى الكورس في الشريط الجانبي على شكل أقسام وخطوات (شبيه بـ Udemy)
@@ -54,7 +65,7 @@ else:
             st.caption(section['description'])
             for step in section['steps']:
                 button_label = f"{step['step_id']} - {step['step_title']}"
-                if st.button(button_label, key=f"btn_{step['step_id']}"):
+                if st.button(button_label, key=f"btn_{selected_course}_{step['step_id']}"):
                     st.session_state['current_section'] = section['section_title']
                     st.session_state['current_step'] = step
 
@@ -82,9 +93,8 @@ else:
         st.markdown("---")
         
         # البحث عن ملف الـ Markdown الخاص بالدرس لعرضه
-        safe_title = sanitize_filename(curr_st['step_title'])
-        md_filename = f"step_{curr_st['step_id']}_{safe_title}.md"
-        md_path = os.path.join(OUTPUT_DIR, md_filename)
+        md_filename = lesson_filename(curr_st['step_id'], curr_st['step_title'])
+        md_path = os.path.join(selected_dir, md_filename)
         
         if os.path.exists(md_path):
             with open(md_path, "r", encoding="utf-8") as md_file:

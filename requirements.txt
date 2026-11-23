@@ -1,0 +1,16 @@
+# Backend API
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+pydantic-settings>=2.3
+
+# AI / RAG
+google-genai>=1.0
+qdrant-client>=1.12
+sentence-transformers>=3.0
+
+# Course review UI (course_viewer_ui.py)
+streamlit>=1.38
+
+# Tests (fastapi.testclient)
+httpx>=0.27
