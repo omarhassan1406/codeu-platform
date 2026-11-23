@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -14,6 +13,7 @@ from app.core.config import settings
 from app.core.console import configure_console
 from app.core.course_paths import MANIFEST_FILENAME, ROADMAP_FILENAME, course_dir, lesson_filename
 from app.services.ai_clients import get_embedding_model, get_qdrant_client
+from app.services.chunking import WordChunker, get_chunker
 from app.services.gemini_service import generate_content_with_fallback
 
 configure_console()
@@ -25,9 +25,8 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = settings.COLLECTION_NAME
 
-# تحديد مسار مجلد المشروع تلقائياً بناءً على مكان وجود السكريبت
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "generated_courses")
+# مجلد الكورسات المولدة (قابل للتغيير عبر GENERATED_COURSES_DIR)
+OUTPUT_DIR = str(settings.GENERATED_COURSES_DIR)
 
 # Fixed namespace so the same (course, step, chunk) always maps to the same Qdrant point id.
 QDRANT_POINT_NAMESPACE = uuid.UUID("6f1c2a4e-8d3b-5e7f-9a0b-1c2d3e4f5a6b")
@@ -243,12 +242,9 @@ def generate_step_content(course_title: str, section_title: str, step: Step, pre
 # 5. وظيفة الرفع لـ Qdrant مع إعادة المحاولة
 # ==========================================
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
-    words = text.split()
-    chunks = []
-    for i in range(0, len(words), chunk_size - overlap):
-        chunk = " ".join(words[i:i + chunk_size])
-        chunks.append(chunk)
-    return chunks
+    """Legacy word-window chunking, kept for backwards compatibility.
+    Ingestion uses ``get_chunker()`` (settings.CHUNK_STRATEGY) instead."""
+    return WordChunker(chunk_size, overlap).split(text)
 
 
 def make_point_id(course_title: str, step_id: str, chunk_index: int) -> str:
@@ -267,7 +263,8 @@ def _lesson_filter(course_title: str, step_id: str) -> rest.Filter:
 
 def ingest_lesson_to_qdrant_with_retry(course_title: str, section_title: str, step_id: str, step_title: str, content: str):
     print(f"   🧠 [RAG] جاري تقطيع ورفع محتوى الدرس {step_id} إلى Qdrant Cloud...")
-    chunks = chunk_text(content)
+    chunker = get_chunker()
+    chunks = chunker.split(content)
     embedding_model = get_embedding_model()
     qdrant_client = get_qdrant_client()
 
@@ -284,6 +281,7 @@ def ingest_lesson_to_qdrant_with_retry(course_title: str, section_title: str, st
                     "step_id": step_id,
                     "step_title": step_title,
                     "chunk_index": idx,
+                    "chunk_strategy": chunker.name,
                     "text": chunk
                 }
             )

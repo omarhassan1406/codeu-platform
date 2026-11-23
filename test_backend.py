@@ -735,8 +735,11 @@ class IngestionTests(unittest.TestCase):
             [("course_title", "Py"), ("step_id", "1.1")],
         )
         points = qdrant.upsert.call_args.kwargs["points"]
-        self.assertEqual(len(points), 2)
+        expected_chunks = chunking.get_chunker().split("word " * 600)
+        self.assertEqual(len(points), len(expected_chunks))
+        self.assertGreater(len(points), 1)
         self.assertEqual(points[0].id, Generate_Course.make_point_id("Py", "1.1", 0))
+        self.assertEqual(points[0].payload["chunk_strategy"], settings.CHUNK_STRATEGY)
 
     def test_ingestion_failure_is_raised_after_retries(self):
         qdrant = mock.Mock()
@@ -747,6 +750,405 @@ class IngestionTests(unittest.TestCase):
             with self.assertRaises(Generate_Course.IngestionError):
                 Generate_Course.ingest_lesson_to_qdrant_with_retry("Py", "Basics", "1.1", "Setup", "text")
         self.assertEqual(qdrant.upsert.call_count, 3)
+
+# =====================================================================
+# Phase 2A: chunking, reranking, catalog, onboarding, config
+# =====================================================================
+
+from pathlib import Path
+
+from app.services import chunking, course_catalog, reranker as reranker_module, suggestions
+from app.schemas.courses import CourseSummary
+from app.schemas.onboarding import LearnerProfile
+
+
+def _legacy_word_chunks(text, chunk_size=500, overlap=50):
+    words = text.split()
+    return [" ".join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size - overlap)]
+
+
+class ChunkingTests(unittest.TestCase):
+    def test_word_chunker_matches_legacy_output(self):
+        text = " ".join(f"w{i}" for i in range(1234))
+        self.assertEqual(chunking.WordChunker(500, 50).split(text), _legacy_word_chunks(text))
+        self.assertEqual(Generate_Course.chunk_text(text), _legacy_word_chunks(text))
+        self.assertEqual(Generate_Course.chunk_text(text, 100, 10), _legacy_word_chunks(text, 100, 10))
+
+    def test_character_chunks_respect_size_and_keep_all_words(self):
+        text = "# Title\n\n" + "\n\n".join(
+            f"Paragraph {p}. " + " ".join(f"word{p}_{i}." for i in range(40)) for p in range(8)
+        )
+        chunks = chunking.CharacterChunker(600, 120).split(text)
+
+        self.assertGreater(len(chunks), 3)
+        self.assertTrue(all(len(c) <= 600 for c in chunks))
+        joined = " ".join(chunks)
+        for word in text.split():
+            self.assertIn(word, joined)
+
+    def test_long_prose_chunks_overlap(self):
+        text = " ".join(f"Sentence number {i} explains something." for i in range(80))
+        chunks = chunking.CharacterChunker(300, 80).split(text)
+
+        self.assertGreater(len(chunks), 2)
+        for previous, current in zip(chunks, chunks[1:]):
+            last_sentence = previous.split(". ")[-1].rstrip(".")
+            self.assertIn(last_sentence, current)
+
+    def test_code_blocks_stay_fenced_and_keep_line_breaks(self):
+        code = "\n".join(f"    value_{i} = compute({i})  # step {i}" for i in range(60))
+        text = f"Intro paragraph.\n\n```python\ndef run():\n{code}\n```\n\nOutro."
+        chunks = chunking.CharacterChunker(600, 120).split(text)
+
+        code_chunks = [c for c in chunks if "value_" in c]
+        self.assertGreater(len(code_chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), 600)
+            self.assertEqual(chunk.count("```") % 2, 0, chunk)
+        for chunk in code_chunks:
+            self.assertIn("```python\n", chunk)
+            self.assertIn("\n    value_", chunk)  # line structure preserved
+        for i in range(60):
+            self.assertTrue(any(f"value_{i} = compute({i})" in c for c in chunks))
+
+    def test_small_code_block_is_kept_whole(self):
+        text = "Explain.\n\n```python\nx = 1\nprint(x)\n```\n\nDone."
+        chunks = chunking.CharacterChunker(600, 120).split(text)
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("```python\nx = 1\nprint(x)\n```", chunks[0])
+
+    def test_unclosed_fence_is_closed_per_chunk(self):
+        text = "Intro.\n\n```python\nx = 1\ny = 2"
+        chunks = chunking.CharacterChunker(600, 120).split(text)
+        self.assertTrue(all(c.count("```") % 2 == 0 for c in chunks))
+        self.assertIn("y = 2", chunks[-1])
+
+    def test_real_generated_lesson_chunks_cleanly(self):
+        course = os.path.join(BASE_DIR, "generated_courses", "Programming_in_Python_for_Beginners_to_Advanced")
+        lesson = next(f for f in os.listdir(course) if f.startswith("step_1.2_"))
+        with open(os.path.join(course, lesson), encoding="utf-8") as f:
+            text = f.read()
+        chunks = chunking.get_chunker("character").split(text)
+        self.assertTrue(chunks)
+        self.assertTrue(all(len(c) <= settings.CHUNK_SIZE_CHARS for c in chunks))
+        self.assertTrue(all(c.count("```") % 2 == 0 for c in chunks))
+
+    def test_get_chunker_uses_settings_and_validates(self):
+        self.assertIsInstance(chunking.get_chunker(), chunking.CharacterChunker)
+        with mock.patch.object(settings, "CHUNK_STRATEGY", "word"):
+            self.assertIsInstance(chunking.get_chunker(), chunking.WordChunker)
+        chunker = chunking.get_chunker("character")
+        self.assertEqual((chunker.chunk_size, chunker.overlap), (600, 120))
+        with self.assertRaises(ValueError):
+            chunking.get_chunker("sentences")
+        with self.assertRaises(ValueError):
+            chunking.CharacterChunker(100, 100)
+
+
+class FakeCrossEncoder:
+    def predict(self, pairs):
+        # Higher score for chunks containing the word "best".
+        return [10.0 if "best" in text else float(len(text)) / 100 for _, text in pairs]
+
+
+class RerankerTests(unittest.TestCase):
+    def chunks(self):
+        return [
+            RetrievedChunk(text="ok", score=0.9),
+            RetrievedChunk(text="the best one", score=0.6),
+            RetrievedChunk(text="fine", score=0.7),
+        ]
+
+    def test_noop_keeps_order_and_truncates(self):
+        result = reranker_module.NoOpReranker().rerank("q", self.chunks(), 2)
+        self.assertEqual([c.text for c in result], ["ok", "the best one"])
+
+    def test_cross_encoder_reorders_and_records_scores(self):
+        result = reranker_module.CrossEncoderReranker(model=FakeCrossEncoder()).rerank("q", self.chunks(), 2)
+        self.assertEqual(result[0].text, "the best one")
+        self.assertEqual(result[0].rerank_score, 10.0)
+        self.assertEqual(len(result), 2)
+
+    def test_get_reranker_by_name(self):
+        self.assertIsInstance(reranker_module.get_reranker(), reranker_module.NoOpReranker)
+        bge = reranker_module.get_reranker("bge")
+        self.assertIsInstance(bge, reranker_module.CrossEncoderReranker)
+        self.assertIs(bge, reranker_module.get_reranker("bge"))  # cached, model loads once
+        self.assertIsNone(bge._model)  # not loaded until first rerank
+        with self.assertRaises(ValueError):
+            reranker_module.get_reranker("cohere")
+
+    def _search_with(self, reranker):
+        qdrant = mock.Mock()
+        qdrant.query_points.return_value = pytypes.SimpleNamespace(
+            points=[FakeHit(0.9, "ok"), FakeHit(0.6, "the best one"), FakeHit(0.7, "fine")]
+        )
+        with mock.patch.object(rag_service, "get_embedding_model", return_value=FakeEmbedding()), \
+             mock.patch.object(rag_service, "get_qdrant_client", return_value=qdrant):
+            result = rag_service.search_course_rag("Py", "q", limit=2, min_score=0.5, reranker=reranker)
+        return result, qdrant.query_points.call_args.kwargs
+
+    def test_rag_fetches_candidates_then_reranks_to_top_k(self):
+        result, kwargs = self._search_with(reranker_module.CrossEncoderReranker(model=FakeCrossEncoder()))
+        self.assertEqual(kwargs["limit"], settings.RAG_RERANK_CANDIDATES)
+        self.assertEqual([c.text for c in result][0], "the best one")
+        self.assertEqual(len(result), 2)
+
+    def test_rag_without_reranker_fetches_only_top_k(self):
+        result, kwargs = self._search_with(reranker_module.NoOpReranker())
+        self.assertEqual(kwargs["limit"], 2)
+        self.assertEqual([c.text for c in result], ["ok", "the best one"])
+
+    def test_reranker_failure_falls_back_to_vector_order(self):
+        broken = mock.Mock(name="broken")
+        broken.rerank.side_effect = RuntimeError("model crashed")
+        with self.assertLogs("app.services.rag_service", level="ERROR"):
+            result, _ = self._search_with(broken)
+        self.assertEqual([c.text for c in result], ["ok", "the best one"])
+
+
+def write_course(base, folder, roadmap, lessons=None, manifest=None):
+    """Create a course folder; ``lessons`` is a list of step ids to write (default: all)."""
+    import json
+    from app.core.course_paths import lesson_filename
+
+    path = os.path.join(base, folder)
+    os.makedirs(path, exist_ok=True)
+    with open(os.path.join(path, "roadmap.json"), "w", encoding="utf-8") as f:
+        f.write(roadmap if isinstance(roadmap, str) else json.dumps(roadmap))
+    if isinstance(roadmap, dict):
+        for section in roadmap["sections"]:
+            for step in section["steps"]:
+                if lessons is None or step["step_id"] in lessons:
+                    name = lesson_filename(step["step_id"], step["step_title"])
+                    with open(os.path.join(path, name), "w", encoding="utf-8") as f:
+                        f.write(f"# {section['section_title']}\n## {step['step_title']}\n\nBody {step['step_id']}")
+    if manifest is not None:
+        with open(os.path.join(path, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+    return path
+
+
+class CatalogServiceTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = tmp.name
+        write_course(self.base, "Done", make_roadmap_dict(title="Done Course"), manifest={"status": "complete"})
+        write_course(self.base, "Legacy", make_roadmap_dict(title="Legacy Course"))
+        write_course(self.base, "Partial", make_roadmap_dict(title="Partial Course"), lessons=["1.1"])
+        write_course(self.base, "Broken", make_roadmap_dict(title="Broken Course"), manifest={"status": "failed"})
+        write_course(self.base, "Garbage", "{not json")
+        os.makedirs(os.path.join(self.base, "EmptyFolder"))
+
+    def test_lists_courses_with_derived_status(self):
+        courses = {c.course_id: c for c in course_catalog.list_courses(self.base)}
+
+        self.assertEqual(set(courses), {"Done", "Legacy", "Partial", "Broken"})
+        self.assertEqual(courses["Done"].status, "complete")
+        self.assertEqual(courses["Legacy"].status, "complete")
+        self.assertEqual(courses["Partial"].status, "incomplete")
+        self.assertEqual(courses["Broken"].status, "failed")
+        self.assertEqual(courses["Partial"].available_lessons_count, 1)
+        self.assertEqual(courses["Done"].lessons_count, 8)
+        self.assertEqual(courses["Done"].total_duration_mins, 80)
+        self.assertEqual(courses["Done"].title, "Done Course")
+        self.assertEqual(courses["Done"].section_titles, ["Section 1", "Section 2"])
+
+    def test_status_filter(self):
+        ids = [c.course_id for c in course_catalog.list_courses(self.base, status="complete")]
+        self.assertEqual(ids, ["Done", "Legacy"])
+
+    def test_course_detail_marks_available_lessons(self):
+        detail = course_catalog.get_course("Partial", self.base)
+        steps = [s for section in detail.sections for s in section.steps]
+        self.assertEqual([s.step_id for s in steps if s.available], ["1.1"])
+
+    def test_unknown_or_traversal_ids_are_not_found(self):
+        for bad in ("Nope", "../Done", "..", "Garbage", "EmptyFolder", "Done/../Legacy"):
+            with self.assertRaises(course_catalog.CourseNotFoundError, msg=bad):
+                course_catalog.get_course(bad, self.base)
+
+    def test_lesson_detail_with_neighbours(self):
+        lesson = course_catalog.get_lesson("Done", "1.4", self.base)
+        self.assertEqual((lesson.previous_step_id, lesson.next_step_id), ("1.3", "2.1"))
+        self.assertEqual(lesson.section_title, "Section 1")
+        self.assertIn("Body 1.4", lesson.content_markdown)
+
+        first = course_catalog.get_lesson("Done", "1.1", self.base)
+        last = course_catalog.get_lesson("Done", "2.4", self.base)
+        self.assertIsNone(first.previous_step_id)
+        self.assertIsNone(last.next_step_id)
+
+    def test_missing_lesson_file_or_step_is_not_found(self):
+        with self.assertRaises(course_catalog.LessonNotFoundError):
+            course_catalog.get_lesson("Partial", "1.2", self.base)
+        with self.assertRaises(course_catalog.LessonNotFoundError):
+            course_catalog.get_lesson("Done", "9.9", self.base)
+
+    def test_repository_courses_are_listed(self):
+        courses = course_catalog.list_courses(os.path.join(BASE_DIR, "generated_courses"))
+        titles = {c.title: c for c in courses}
+        self.assertIn("Programming in Python for Beginners to Advanced", titles)
+        self.assertTrue(all(c.status == "complete" for c in courses))
+
+
+class CatalogApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def setUp(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        write_course(tmp.name, "Done & Dusted", make_roadmap_dict(title="Done Course"), manifest={"status": "complete"})
+        write_course(tmp.name, "Partial", make_roadmap_dict(title="Partial Course"), lessons=["1.1"])
+        patcher = mock.patch.object(settings, "GENERATED_COURSES_DIR", tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_list_and_filter(self):
+        self.assertEqual(len(self.client.get("/api/v1/courses").json()), 2)
+        complete = self.client.get("/api/v1/courses", params={"status": "complete"}).json()
+        self.assertEqual([c["course_id"] for c in complete], ["Done & Dusted"])
+        self.assertEqual(self.client.get("/api/v1/courses", params={"status": "bogus"}).status_code, 422)
+
+    def test_course_and_lesson_endpoints(self):
+        from urllib.parse import quote
+
+        cid = quote("Done & Dusted")
+        detail = self.client.get(f"/api/v1/courses/{cid}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(len(detail.json()["sections"]), 2)
+
+        lesson = self.client.get(f"/api/v1/courses/{cid}/lessons/2.1")
+        self.assertEqual(lesson.status_code, 200)
+        self.assertEqual(lesson.json()["previous_step_id"], "1.4")
+
+    def test_not_found_responses(self):
+        self.assertEqual(self.client.get("/api/v1/courses/Nope").json()["detail"], "Course not found")
+        self.assertEqual(self.client.get("/api/v1/courses/Nope").status_code, 404)
+        missing = self.client.get("/api/v1/courses/Partial/lessons/1.2")
+        self.assertEqual((missing.status_code, missing.json()["detail"]), (404, "Lesson not found"))
+
+    def test_generate_route_still_accepts_post(self):
+        paths = app.openapi()["paths"]
+        self.assertIn("post", paths["/api/v1/courses/generate"])
+        self.assertIn("get", paths["/api/v1/courses"])
+
+
+def make_summary(course_id, title, status="complete", audience="Everyone", sections=()):
+    return CourseSummary(
+        course_id=course_id, title=title, target_audience=audience, status=status,
+        sections_count=len(sections), lessons_count=4, available_lessons_count=4,
+        total_duration_mins=40, section_titles=list(sections),
+    )
+
+
+class OnboardingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def setUp(self):
+        self.courses = [
+            make_summary("py", "Programming in Python for Beginners", sections=["Python basics"]),
+            make_summary("fl", "Advanced Flutter State Management", sections=["Riverpod", "BLoC"]),
+            make_summary("wip", "Calculus Fundamentals", status="in_progress"),
+        ]
+
+    def profile(self, **kwargs):
+        data = {"interests": ["Python", "Calculus"], "level": "beginner"}
+        data.update(kwargs)
+        return LearnerProfile(**data)
+
+    def test_mixes_existing_and_generate_suggestions(self):
+        result = suggestions.suggest_courses(self.profile(), self.courses)
+        kinds = [(s.kind, s.course_id or s.generation_topic) for s in result.suggestions]
+
+        self.assertEqual(kinds, [("existing", "py"), ("generate", "Calculus for Beginners")])
+        self.assertEqual(result.strategy, "keyword-v1")
+
+    def test_unfinished_courses_are_never_suggested(self):
+        result = suggestions.suggest_courses(self.profile(interests=["Calculus"]), self.courses)
+        self.assertTrue(all(s.course_id != "wip" for s in result.suggestions))
+        self.assertEqual(result.suggestions[0].kind, "generate")
+
+    def test_section_titles_are_matched_and_list_is_capped(self):
+        profile = self.profile(interests=["Riverpod", "Python", "Chemistry", "History"], level="advanced")
+        result = suggestions.suggest_courses(profile, self.courses, max_suggestions=3)
+
+        self.assertEqual(len(result.suggestions), 3)
+        self.assertEqual({s.kind for s in result.suggestions}, {"existing", "generate"})
+        self.assertIn("for Advanced learners", result.suggestions[1].generation_topic)
+
+    def test_profile_validation(self):
+        self.assertEqual(self.profile(interests=["  python ", "Python", "SQL"]).interests, ["python", "SQL"])
+        for bad in ({"interests": []}, {"interests": ["x"]}, {"level": "guru"}):
+            with self.assertRaises(Exception):
+                self.profile(**bad)
+
+    def test_endpoint_contract(self):
+        with mock.patch.object(course_catalog, "list_courses", return_value=self.courses):
+            response = self.client.post(
+                "/api/v1/onboarding/suggestions",
+                json={"profile": {"interests": ["Python"], "level": "beginner"}, "max_suggestions": 2},
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["suggestions"][0]["course_id"], "py")
+        self.assertEqual(
+            self.client.post("/api/v1/onboarding/suggestions", json={"profile": {"level": "beginner"}}).status_code,
+            422,
+        )
+
+
+class ConfigTests(unittest.TestCase):
+    def make(self, **env):
+        from app.core.config import Settings
+
+        with mock.patch.dict(os.environ, {k: str(v) for k, v in env.items()}):
+            return Settings(_env_file=None)
+
+    def test_documented_defaults(self):
+        s = self.make()
+        self.assertEqual((s.RAG_TOP_K, s.RAG_MIN_SCORE), (3, 0.45))
+        self.assertEqual((s.RERANKER, s.RAG_RERANK_CANDIDATES), ("none", 20))
+        self.assertEqual((s.CHUNK_STRATEGY, s.CHUNK_SIZE_CHARS, s.CHUNK_OVERLAP_CHARS), ("character", 600, 120))
+        self.assertEqual((s.CHUNK_SIZE_WORDS, s.CHUNK_OVERLAP_WORDS), (500, 50))
+        self.assertEqual(
+            (s.GENERATION_MAX_ATTEMPTS, s.ROADMAP_MIN_STEPS_PER_SECTION, s.LESSON_MIN_CHARS), (3, 4, 800)
+        )
+        self.assertEqual(s.GENERATED_COURSES_DIR, Path(BASE_DIR).resolve() / "generated_courses")
+
+    def test_env_overrides(self):
+        s = self.make(RAG_MIN_SCORE="0.6", CHUNK_STRATEGY="word", ROADMAP_MIN_STEPS_PER_SECTION="5")
+        self.assertEqual((s.RAG_MIN_SCORE, s.CHUNK_STRATEGY, s.ROADMAP_MIN_STEPS_PER_SECTION), (0.6, "word", 5))
+
+    def test_invalid_values_are_rejected(self):
+        from pydantic import ValidationError
+
+        for env in (
+            {"RAG_MIN_SCORE": "1.5"},
+            {"RAG_TOP_K": "0"},
+            {"CHUNK_STRATEGY": "sentences"},
+            {"RERANKER": "cohere"},
+            {"CHUNK_SIZE_CHARS": "200", "CHUNK_OVERLAP_CHARS": "200"},
+            {"CHUNK_SIZE_WORDS": "50", "CHUNK_OVERLAP_WORDS": "60"},
+            {"RERANKER": "bge", "RAG_TOP_K": "5", "RAG_RERANK_CANDIDATES": "3"},
+            {"ROADMAP_MIN_STEPS_PER_SECTION": "0"},
+        ):
+            with self.assertRaises(ValidationError, msg=str(env)):
+                self.make(**env)
+
+    def test_env_file_is_resolved_from_project_root(self):
+        from app.core.config import Settings
+
+        self.assertEqual(Path(Settings.model_config["env_file"]), Path(BASE_DIR).resolve() / ".env")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

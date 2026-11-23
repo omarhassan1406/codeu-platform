@@ -2,8 +2,11 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.courses import CourseDetail, CourseStatus, CourseSummary, LessonDetail
+from app.services import course_catalog
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -68,3 +71,35 @@ async def generate_course(
         course_topic=request.course_topic,
         message="Course generation started in the background.",
     )
+
+
+# ---- Read-only catalog -----------------------------------------------------
+# Plain ``def`` handlers: they read files, so FastAPI runs them in its threadpool.
+
+
+@router.get("", response_model=list[CourseSummary])
+def list_courses(
+    status_filter: CourseStatus | None = Query(None, alias="status"),
+) -> list[CourseSummary]:
+    """List generated courses. Use ?status=complete to show only finished ones."""
+    return course_catalog.list_courses(status=status_filter)
+
+
+@router.get("/{course_id}", response_model=CourseDetail)
+def get_course(course_id: str) -> CourseDetail:
+    """Full roadmap of one course, with per-lesson availability."""
+    try:
+        return course_catalog.get_course(course_id)
+    except course_catalog.CourseNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
+
+
+@router.get("/{course_id}/lessons/{step_id}", response_model=LessonDetail)
+def get_lesson(course_id: str, step_id: str) -> LessonDetail:
+    """One lesson's Markdown plus its position (previous/next step) in the course."""
+    try:
+        return course_catalog.get_lesson(course_id, step_id)
+    except course_catalog.CourseNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
+    except course_catalog.LessonNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lesson not found")
