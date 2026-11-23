@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import RiveAvatar from './RiveAvatar'
+
+// Answers are Markdown (bold, lists, code); reuse the lesson renderer.
+const LessonContent = lazy(() => import('./LessonContent'))
 
 const STATUS_LABEL = {
   idle: 'Ready for questions',
@@ -44,9 +47,11 @@ function AnswerCard({ exchange, onReplay, speaking }) {
       <p dir="auto" className="text-[12px] text-slate-400">
         You asked: <span className="text-slate-200">{exchange.question}</span>
       </p>
-      <p dir="auto" className="scrollbar-thin mt-2 max-h-48 overflow-y-auto text-[14px] leading-7 text-slate-100">
-        {exchange.answer}
-      </p>
+      <div className="answer-prose scrollbar-thin mt-2 max-h-64 overflow-y-auto pr-1">
+        <Suspense fallback={<p dir="auto" className="whitespace-pre-wrap text-[14px] leading-7 text-slate-100">{exchange.answer}</p>}>
+          <LessonContent markdown={exchange.answer} />
+        </Suspense>
+      </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
         {exchange.grounded ? (
           <button

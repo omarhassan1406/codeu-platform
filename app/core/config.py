@@ -31,8 +31,9 @@ class Settings(BaseSettings):
     # Model used to generate roadmaps and lessons.
     GEMINI_COURSE_MODEL: str = "gemini-3.5-flash-lite"
     # Model used by the tutor (raise-hand answers).
-    GEMINI_MODEL_NAME: str = "gemini-2.0-flash"
-    # Fallback order when a model is rate limited (HTTP 429).
+    # gemini-2.0-flash was the old default; it now returns 404 (retired).
+    GEMINI_MODEL_NAME: str = "gemini-3.5-flash-lite"
+    # Fallback order when a model is rate limited (429) or unavailable (404).
     GEMINI_MODEL_HIERARCHY: list[str] = [
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",

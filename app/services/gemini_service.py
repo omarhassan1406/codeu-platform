@@ -20,6 +20,16 @@ def is_rate_limit_error(error: Exception) -> bool:
     return "429" in message or "resource exhausted" in message or "rate limit" in message
 
 
+def is_model_unavailable_error(error: Exception) -> bool:
+    """True when the model itself is missing or retired for this key (HTTP 404).
+
+    Google retires model IDs over time; a stale ID should fall through to the
+    next model instead of failing every request.
+    """
+    code = getattr(error, "code", None) or getattr(error, "status_code", None)
+    return code == 404 or getattr(error, "status", None) == "NOT_FOUND"
+
+
 def build_model_sequence(preferred_model: str | None = None) -> list[str]:
     sequence: list[str] = []
     if preferred_model:
@@ -49,12 +59,17 @@ def generate_content_with_fallback(
                 config=config,
             )
         except Exception as error:
-            if not is_rate_limit_error(error):
+            if is_rate_limit_error(error):
+                reason = "exhausted"
+            elif is_model_unavailable_error(error):
+                reason = "unavailable"
+            else:
                 raise
             last_error = error
             logger.warning(
-                "Gemini model %s exhausted (attempt %d/%d); switching to next model: %s",
+                "Gemini model %s %s (attempt %d/%d); switching to next model: %s",
                 model,
+                reason,
                 index + 1,
                 len(models),
                 error,

@@ -82,6 +82,19 @@ def make_rate_limit_error(model: str = "test-model") -> genai_errors.ClientError
     )
 
 
+def make_model_not_found_error(model: str = "test-model") -> genai_errors.ClientError:
+    return genai_errors.ClientError(
+        404,
+        {
+            "error": {
+                "code": 404,
+                "message": f"models/{model} is not found for API version v1beta",
+                "status": "NOT_FOUND",
+            }
+        },
+    )
+
+
 COMPLETE_LESSON = "# Lesson\n\n" + ("Explained concept. " * 60) + "\n```python\nx = 1\n```\n"
 
 
@@ -290,7 +303,7 @@ class TutorRaiseHandTests(unittest.TestCase):
             response = self._post_question()
 
         self.assertEqual(response.status_code, 200)
-        fallback_model = settings.GEMINI_MODEL_HIERARCHY[0]
+        fallback_model = gemini_service.build_model_sequence(settings.GEMINI_MODEL_NAME)[1]
         self.assertEqual(response.json()["answer_text"], f"[{fallback_model}] إجابة تجريبية")
         self.assertEqual(response.json()["avatar_state"], "explaining")
         self.assertEqual(
@@ -457,6 +470,41 @@ class FallbackConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(response.text, "[gemini-3.8-flash] إجابة تجريبية")
         self.assertEqual(sum("exhausted" in entry for entry in captured.output), 2)
+
+    def test_model_unavailable_detection(self):
+        self.assertTrue(gemini_service.is_model_unavailable_error(make_model_not_found_error()))
+        self.assertFalse(gemini_service.is_model_unavailable_error(make_rate_limit_error()))
+        self.assertFalse(gemini_service.is_model_unavailable_error(ValueError("invalid API key")))
+
+    def test_wrapper_skips_retired_model(self):
+        # Live check found gemini-2.0-flash returns 404 NOT_FOUND on the project key.
+        self.gemini.models.failures = {"gemini-2.0-flash": make_model_not_found_error("gemini-2.0-flash")}
+
+        with self.assertLogs("app.services.gemini_service", level="WARNING") as captured:
+            response = gemini_service.generate_content_with_fallback(
+                contents="hello",
+                preferred_model="gemini-2.0-flash",
+            )
+
+        self.assertEqual(
+            [call["model"] for call in self.gemini.models.calls],
+            ["gemini-2.0-flash", "gemini-3.5-flash-lite"],
+        )
+        self.assertEqual(response.text, "[gemini-3.5-flash-lite] إجابة تجريبية")
+        self.assertTrue(any("unavailable" in entry for entry in captured.output))
+
+    def test_all_models_unavailable_raises_last_error(self):
+        self.gemini.models.failures = {
+            model: make_model_not_found_error(model)
+            for model in gemini_service.build_model_sequence("gemini-2.0-flash")
+        }
+        with self.assertLogs("app.services.gemini_service", level="WARNING"):
+            with self.assertRaises(genai_errors.ClientError):
+                gemini_service.generate_content_with_fallback(contents="hello", preferred_model="gemini-2.0-flash")
+
+    def test_default_tutor_model_is_a_listed_model(self):
+        self.assertIn(settings.GEMINI_MODEL_NAME, settings.GEMINI_MODEL_HIERARCHY)
+        self.assertIn(settings.GEMINI_COURSE_MODEL, settings.GEMINI_MODEL_HIERARCHY)
 
     def test_wrapper_propagates_non_rate_limit_errors(self):
         self.gemini.models.failures = {"gemini-3.5-flash-lite": ValueError("invalid API key")}

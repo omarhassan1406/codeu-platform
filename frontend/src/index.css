@@ -434,6 +434,25 @@ textarea {
   color: #ffffff;
 }
 
+/* Tutor answers reuse the lesson renderer at panel scale. */
+.answer-prose .lesson-prose {
+  font-size: 0.875rem;
+  line-height: 1.75;
+}
+
+.answer-prose .lesson-prose > * + * {
+  margin-top: 0.6em;
+}
+
+.answer-prose .lesson-prose :is(h1, h2, h3, h4) {
+  margin-top: 0.9em;
+  font-size: 0.95rem;
+}
+
+.answer-prose figure {
+  margin-block: 0.75rem;
+}
+
 /* ---- Motion -------------------------------------------------------------- */
 @keyframes caption-in {
   from {

@@ -5,10 +5,22 @@ const MAX_CAPTION_CHARS = 120
 const MS_PER_CHAR = 55
 const MIN_CAPTION_MS = 2200
 
+// Answers arrive as Markdown. Captions are spoken text, so code blocks become a
+// pointer to the answer panel and formatting marks are dropped.
+export function toSpokenText(markdown) {
+  return markdown
+    .replace(/```[\s\S]*?(```|$)/g, ' (see the code in the answer panel) ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__|\*|_|~~)(?=\S)([\s\S]*?\S)\1/g, '$2')
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, '')
+    .replace(/^\s*[-*_]{3,}\s*$/gm, '')
+}
+
 // Break an answer into short subtitle lines: sentences first, then commas or
 // spaces when a sentence is too long to read at a glance.
 export function toCaptions(text) {
-  const sentences = text
+  const sentences = toSpokenText(text)
     .replace(/\s+/g, ' ')
     .split(/(?<=[.!?؟؛])\s+/)
     .map((s) => s.trim())
