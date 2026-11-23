@@ -8,6 +8,10 @@ pydantic-settings>=2.3
 google-genai>=1.0
 qdrant-client>=1.12
 
+# Voice: text-to-speech via Edge online voices; uploads for speech-to-text
+edge-tts>=7.0
+python-multipart>=0.0.9
+
 # Course review UI (course_viewer_ui.py)
 streamlit>=1.38
 

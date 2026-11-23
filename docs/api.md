@@ -125,9 +125,41 @@ only; a smarter ranker can replace it later without changing this contract.
 
 `POST /tutor/raise-hand` with `{"course_title", "step_id", "student_question"}`.
 
+Retrieval is step-aware: chunks from `step_id` (the lesson the learner is on)
+come first, and other lessons of the same course fill in only when that lesson
+has fewer than `RAG_TOP_K` relevant chunks. Every chunk must still reach
+`RAG_MIN_SCORE`. Excerpts are labelled "current lesson" or "another lesson",
+and the tutor names the other lesson when it uses one.
+
 - `200` with `avatar_state: "explaining"`: a grounded answer, with the
   source chunks in `context_used`.
 - `200` with `avatar_state: "idle"`: the course does not cover the question, so
   the tutor declines rather than guessing.
 - `503`: the knowledge base is unreachable.
 - `502`: the AI model failed.
+
+## Voice
+
+Both services are hosted, so the server needs no audio models or GPU.
+
+`POST /voice/transcribe` (multipart): field `audio` (webm/ogg/mp4/wav/mp3,
+up to `STT_MAX_BYTES`, default 5 MB) and optional field `language` (`ar` or
+`en`; omit to auto-detect). Uses Groq Whisper (`GROQ_STT_MODEL`).
+
+```json
+{"text": "ما هو المتغير في بايثون؟", "language": "Arabic", "duration_seconds": 4.26}
+```
+
+- `text` is empty (or punctuation only) when nothing intelligible was heard.
+- `400` empty upload, `413` too large, `415` not audio, `503` Groq unavailable
+  (missing key, rate limited, or down). `detail` is safe to show learners.
+
+`POST /voice/speak` with `{"text": "...", "language": "ar" | "en" | null}`
+returns `audio/mpeg` via edge-tts. Send plain text, not Markdown. The voice is
+picked from the text (mostly Arabic → `TTS_VOICE_AR`) and each language has a
+fallback voice; the `X-Voice` header names the one used. `503` when both
+voices fail. Text is limited to `TTS_MAX_CHARS` (default 3000).
+
+The classroom sends the answer's caption lines as the text, so captions and
+audio cover the same words, and advances captions by each line's share of the
+audio duration.

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { useRecorder } from '../lib/useRecorder'
 import RiveAvatar from './RiveAvatar'
 
 // Answers are Markdown (bold, lists, code); reuse the lesson renderer.
@@ -31,6 +32,38 @@ function SendIcon() {
     </svg>
   )
 }
+
+function MicIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true" className="h-[18px] w-[18px]">
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="h-4 w-4">
+      <rect x="6.5" y="6.5" width="11" height="11" rx="2" />
+    </svg>
+  )
+}
+
+function SpeakerIcon({ muted }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true" className="h-4 w-4">
+      <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" strokeLinejoin="round" />
+      {muted ? (
+        <path d="m16 9.5 5 5m0-5-5 5" strokeLinecap="round" />
+      ) : (
+        <path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" strokeLinecap="round" />
+      )}
+    </svg>
+  )
+}
+
+const formatClock = (seconds) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 
 function CloseIcon() {
   return (
@@ -88,6 +121,7 @@ export default function Professor({ tutor, disabled }) {
   const [open, setOpen] = useState(false)
   const [question, setQuestion] = useState('')
   const inputRef = useRef(null)
+  const recorder = useRecorder()
   const busy = tutor.status === 'thinking'
 
   useEffect(() => {
@@ -101,7 +135,23 @@ export default function Professor({ tutor, disabled }) {
 
   const closePanel = () => {
     setOpen(false)
+    if (recorder.recording) recorder.stop() // discard the recording
     if (tutor.status === 'listening') tutor.stop()
+  }
+
+  const toggleRecording = async () => {
+    if (recorder.recording) {
+      const blob = await recorder.stop()
+      if (blob) {
+        setQuestion('')
+        await tutor.askByVoice(blob)
+      } else {
+        tutor.startListening() // accidental tap: keep listening for a typed question
+      }
+      return
+    }
+    tutor.startListening()
+    await recorder.start()
   }
 
   const submit = (event) => {
@@ -129,14 +179,28 @@ export default function Professor({ tutor, disabled }) {
           >
             <div className="flex items-center justify-between gap-2">
               <p className="text-[14px] font-bold text-white">Ask about this lesson</p>
-              <button
-                type="button"
-                onClick={closePanel}
-                aria-label="Close question panel"
-                className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 transition hover:bg-white/[0.06] hover:text-white"
-              >
-                <CloseIcon />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => tutor.setVoiceOn(!tutor.voiceOn)}
+                  aria-pressed={tutor.voiceOn}
+                  aria-label={tutor.voiceOn ? 'Turn the professor’s voice off' : 'Turn the professor’s voice on'}
+                  title={tutor.voiceOn ? 'Voice on' : 'Voice off (captions only)'}
+                  className={`grid h-7 w-7 place-items-center rounded-lg transition hover:bg-white/[0.06] ${
+                    tutor.voiceOn ? 'text-emerald-300' : 'text-slate-500'
+                  }`}
+                >
+                  <SpeakerIcon muted={!tutor.voiceOn} />
+                </button>
+                <button
+                  type="button"
+                  onClick={closePanel}
+                  aria-label="Close question panel"
+                  className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 transition hover:bg-white/[0.06] hover:text-white"
+                >
+                  <CloseIcon />
+                </button>
+              </div>
             </div>
             <p className="mt-1 text-[12px] leading-5 text-slate-400">
               Answers come only from this course. If it isn&apos;t covered, the professor will say so.
@@ -153,16 +217,35 @@ export default function Professor({ tutor, disabled }) {
                 rows={2}
                 maxLength={1000}
                 value={question}
-                disabled={busy}
+                disabled={busy || recorder.recording}
                 onChange={(event) => setQuestion(event.target.value)}
                 onFocus={() => tutor.status === 'idle' && !tutor.speaking && tutor.startListening()}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && !event.shiftKey) submit(event)
                   if (event.key === 'Escape') closePanel()
                 }}
-                placeholder="e.g. What is the difference between a list and a tuple?"
+                placeholder={
+                  recorder.recording
+                    ? `Listening… ${formatClock(recorder.seconds)} / ${formatClock(recorder.maxSeconds)}. Tap the mic to send.`
+                    : 'Type, or tap the mic and speak (Arabic or English)'
+                }
                 className="scrollbar-thin min-h-[44px] flex-1 resize-none rounded-xl border border-white/[0.1] bg-abyss-900 px-3 py-2.5 text-[14px] leading-6 text-white placeholder:text-slate-500 focus:border-ember-400/60 focus:outline-none disabled:opacity-60"
               />
+              <button
+                type="button"
+                onClick={toggleRecording}
+                disabled={busy}
+                aria-pressed={recorder.recording}
+                aria-label={recorder.recording ? 'Stop recording and send' : 'Ask by voice'}
+                className={`relative grid h-11 w-11 shrink-0 place-items-center rounded-xl transition disabled:opacity-50 ${
+                  recorder.recording
+                    ? 'bg-red-500 text-white hover:bg-red-400'
+                    : 'border border-white/[0.12] bg-abyss-900 text-slate-200 hover:border-ember-400/60 hover:text-white'
+                }`}
+              >
+                {recorder.recording && <span className="status-pulse absolute inset-0 rounded-xl ring-2 ring-red-400/60" />}
+                {recorder.recording ? <StopIcon /> : <MicIcon />}
+              </button>
               <button
                 type="submit"
                 disabled={busy || question.trim().length < 2}
@@ -174,6 +257,12 @@ export default function Professor({ tutor, disabled }) {
             </form>
 
             {busy && <p className="mt-3 text-[13px] text-amber-200">The professor is checking the lesson…</p>}
+            {recorder.error && (
+              <p role="alert" className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-[13px] text-amber-100">
+                {recorder.error}
+              </p>
+            )}
+            {tutor.voiceNotice && !busy && <p className="mt-3 text-[12.5px] text-slate-400">{tutor.voiceNotice}</p>}
             {tutor.error && (
               <p role="alert" className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-[13px] text-red-200">
                 {tutor.error}
@@ -206,7 +295,7 @@ export default function Professor({ tutor, disabled }) {
             </button>
           )}
           <span className="hidden rounded-full bg-abyss-800/90 px-3 py-1.5 text-[12px] font-medium text-slate-300 sm:inline" aria-live="polite">
-            {STATUS_LABEL[tutor.status] ?? STATUS_LABEL.idle}
+            {recorder.recording ? 'Listening to you…' : (STATUS_LABEL[tutor.status] ?? STATUS_LABEL.idle)}
           </span>
         </div>
       </div>

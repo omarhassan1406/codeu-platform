@@ -25,7 +25,23 @@ class Settings(BaseSettings):
 
     # ---- API keys (never commit real values) -------------------------------
     GEMINI_API_KEY: str = ""
-    GROQ_API_KEY: str = ""  # reserved for speech-to-text; not used yet
+    GROQ_API_KEY: str = ""  # speech-to-text (Groq Whisper)
+
+    # ---- Voice --------------------------------------------------------------
+    # Speech-to-text: Groq's hosted Whisper (OpenAI-compatible API, free tier).
+    GROQ_API_BASE: str = "https://api.groq.com/openai/v1"
+    GROQ_STT_MODEL: str = "whisper-large-v3-turbo"
+    # Largest accepted recording (5 MB is ~5 minutes of Opus audio).
+    STT_MAX_BYTES: int = Field(5 * 1024 * 1024, ge=1024, le=25 * 1024 * 1024)
+    # Text-to-speech: edge-tts (Microsoft Edge online voices, no key, no model).
+    # Lessons use Egyptian Arabic, so the Arabic voice is Egyptian. Each
+    # language has a fallback voice tried when the first returns no audio
+    # (live check: ar-EG-ShakirNeural failed 4/4 on ordinary sentences).
+    TTS_VOICE_AR: str = "ar-EG-SalmaNeural"
+    TTS_VOICE_AR_FALLBACK: str = "ar-SA-HamedNeural"
+    TTS_VOICE_EN: str = "en-US-AndrewNeural"
+    TTS_VOICE_EN_FALLBACK: str = "en-US-AriaNeural"
+    TTS_MAX_CHARS: int = Field(3000, ge=100, le=10000)
 
     # ---- Gemini models -----------------------------------------------------
     # Model used to generate roadmaps and lessons.

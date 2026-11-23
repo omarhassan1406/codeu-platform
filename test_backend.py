@@ -236,11 +236,12 @@ class TutorRaiseHandTests(unittest.TestCase):
         self.rag_calls = []
         self.rag_error = None
 
-        def fake_rag(course_title, student_question, limit=None, min_score=None):
+        def fake_rag(course_title, student_question, limit=None, min_score=None, step_id=None):
             self.rag_calls.append(
                 {
                     "course_title": course_title,
                     "student_question": student_question,
+                    "step_id": step_id,
                 }
             )
             if self.rag_error is not None:
@@ -283,6 +284,7 @@ class TutorRaiseHandTests(unittest.TestCase):
                 {
                     "course_title": "Python for Beginners",
                     "student_question": "What is a variable?",
+                    "step_id": "1.1",
                 }
             ],
         )
@@ -292,7 +294,7 @@ class TutorRaiseHandTests(unittest.TestCase):
         self.assertIn("chunk-1", call["contents"])
         self.assertIn("What is a variable?", call["contents"])
         self.assertIn(tutor_module.NOT_IN_CONTEXT, call["config"].system_instruction)
-        self.assertIn("الدرس 1.1: Variables", call["contents"])
+        self.assertIn("الدرس الحالي 1.1: Variables", call["contents"])
 
     def test_raise_hand_falls_back_on_rate_limit(self):
         self.rag_context = ["chunk-1"]
@@ -540,7 +542,8 @@ class FallbackConfigurationTests(unittest.TestCase):
 
 
 class FakeHit:
-    def __init__(self, score, text, step_id="1.1"):
+    def __init__(self, score, text, step_id="1.1", point_id=None):
+        self.id = point_id or f"{step_id}:{text}"
         self.score = score
         self.payload = {"text": text, "step_id": step_id, "step_title": "Variables"}
 
@@ -1620,6 +1623,273 @@ class VectorStoreTests(unittest.TestCase):
 
         with contextlib.redirect_stderr(_io.StringIO()), self.assertRaises(SystemExit):
             reingest_courses.main(["--dry-run", "--recreate-collection"])
+
+# =====================================================================
+# Phase 3: step-aware retrieval
+# =====================================================================
+
+
+class CountingEmbedder(FakeEmbedder):
+    def __init__(self):
+        self.queries = 0
+
+    def embed_query(self, text):
+        self.queries += 1
+        return [0.1, 0.2]
+
+
+class StepAwareRetrievalTests(unittest.TestCase):
+    def setUp(self):
+        self.qdrant = mock.Mock()
+        self.embedder = CountingEmbedder()
+        for name, value in (("get_embedder", self.embedder), ("get_qdrant_client", self.qdrant)):
+            patcher = mock.patch.object(rag_service, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _respond(self, lesson_hits, course_hits):
+        def query_points(**kwargs):
+            keys = [c.key for c in kwargs["query_filter"].must]
+            return pytypes.SimpleNamespace(points=lesson_hits if "step_id" in keys else course_hits)
+
+        self.qdrant.query_points.side_effect = query_points
+
+    def _filters(self):
+        return [
+            [(c.key, c.match.value) for c in call.kwargs["query_filter"].must]
+            for call in self.qdrant.query_points.call_args_list
+        ]
+
+    def test_current_lesson_chunks_come_first_even_when_others_score_higher(self):
+        self._respond(
+            lesson_hits=[FakeHit(0.70, "lesson chunk", step_id="1.2")],
+            course_hits=[FakeHit(0.90, "other lesson", step_id="3.1"), FakeHit(0.70, "lesson chunk", step_id="1.2")],
+        )
+        chunks = rag_service.search_course_rag("Py", "q", limit=3, min_score=0.5, step_id="1.2")
+
+        self.assertEqual([c.text for c in chunks], ["lesson chunk", "other lesson"])
+        self.assertEqual(self._filters(), [
+            [("course_title", "Py"), ("step_id", "1.2")],
+            [("course_title", "Py")],
+        ])
+
+    def test_question_is_embedded_once_for_both_searches(self):
+        self._respond([FakeHit(0.7, "a", step_id="1.2")], [FakeHit(0.8, "b", step_id="2.1")])
+        rag_service.search_course_rag("Py", "q", limit=3, min_score=0.5, step_id="1.2")
+        self.assertEqual(self.embedder.queries, 1)
+        vectors = [call.kwargs["query"] for call in self.qdrant.query_points.call_args_list]
+        self.assertEqual(vectors[0], vectors[1])
+
+    def test_no_course_wide_search_when_the_lesson_fills_the_context(self):
+        self._respond([FakeHit(0.7, f"l{i}", step_id="1.2") for i in range(3)], [])
+        chunks = rag_service.search_course_rag("Py", "q", limit=3, min_score=0.5, step_id="1.2")
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual(self.qdrant.query_points.call_count, 1)
+
+    def test_falls_back_across_the_course_when_lesson_has_nothing(self):
+        self._respond([], [FakeHit(0.8, "from 2.1", step_id="2.1")])
+        chunks = rag_service.search_course_rag("Py", "q", limit=3, min_score=0.5, step_id="1.2")
+        self.assertEqual([(c.text, c.step_id) for c in chunks], [("from 2.1", "2.1")])
+
+    def test_threshold_applies_to_both_searches(self):
+        self._respond([FakeHit(0.3, "weak lesson", step_id="1.2")], [FakeHit(0.2, "weak other", step_id="2.1")])
+        chunks = rag_service.search_course_rag("Py", "q", limit=3, min_score=0.5, step_id="1.2")
+        self.assertEqual(chunks, [])
+        for call in self.qdrant.query_points.call_args_list:
+            self.assertEqual(call.kwargs["score_threshold"], 0.5)
+
+    def test_without_step_id_a_single_course_search_runs(self):
+        self._respond([], [FakeHit(0.8, "x", step_id="2.1")])
+        rag_service.search_course_rag("Py", "q", limit=3, min_score=0.5)
+        self.assertEqual(self._filters(), [[("course_title", "Py")]])
+
+    def test_reranker_keeps_lesson_priority(self):
+        class ReverseReranker:
+            name = "reverse"
+
+            def rerank(self, question, chunks, top_k):
+                return list(reversed(chunks))[:top_k]
+
+        self._respond(
+            [FakeHit(0.7, "lesson a", step_id="1.2"), FakeHit(0.65, "lesson b", step_id="1.2")],
+            [FakeHit(0.9, "other", step_id="3.1")],
+        )
+        chunks = rag_service.search_course_rag("Py", "q", limit=3, min_score=0.5, step_id="1.2", reranker=ReverseReranker())
+        self.assertEqual([c.step_id for c in chunks], ["1.2", "1.2", "3.1"])
+
+    def test_tutor_prompt_marks_current_and_other_lessons(self):
+        chunks = [
+            RetrievedChunk(text="here", score=0.7, step_id="1.2", step_title="Variables"),
+            RetrievedChunk(text="there", score=0.8, step_id="3.1", step_title="Loops"),
+        ]
+        text = tutor_module._format_context(chunks, current_step_id="1.2")
+        self.assertIn("الدرس الحالي 1.2: Variables", text)
+        self.assertIn("درس آخر 3.1: Loops", text)
+        self.assertLess(text.index("here"), text.index("there"))
+
+# =====================================================================
+# Phase 3: voice (Groq Whisper STT, edge-tts TTS)
+# =====================================================================
+
+
+class FakeHttpResponse:
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+
+class VoiceServiceTests(unittest.TestCase):
+    def setUp(self):
+        from app.services import voice_service
+
+        self.vs = voice_service
+
+    def test_voice_is_picked_from_the_text_language(self):
+        self.assertEqual(self.vs.pick_voice("المتغير هو صندوق في الذاكرة"), settings.TTS_VOICE_AR)
+        self.assertEqual(self.vs.pick_voice("A variable stores a value"), settings.TTS_VOICE_EN)
+        # Mostly Arabic with English terms still reads as Arabic.
+        self.assertEqual(self.vs.pick_voice("في بايثون نستخدم print لطباعة القيم"), settings.TTS_VOICE_AR)
+        self.assertEqual(self.vs.pick_voice("anything", language="ar"), settings.TTS_VOICE_AR)
+        self.assertEqual(self.vs.pick_voice("أي شيء", language="en"), settings.TTS_VOICE_EN)
+
+    def test_transcribe_sends_audio_to_groq_whisper(self):
+        calls = []
+
+        def fake_post(url, **kwargs):
+            calls.append((url, kwargs))
+            return FakeHttpResponse(200, {"text": " ما هو المتغير؟ ", "language": "arabic", "duration": 2.4})
+
+        with mock.patch.object(self.vs, "http_post", fake_post), \
+                mock.patch.object(settings, "GROQ_API_KEY", "test-key"):
+            result = self.vs.transcribe(b"audio-bytes", "q.webm", "audio/webm", language="ar")
+
+        self.assertEqual(result, {"text": "ما هو المتغير؟", "language": "arabic", "duration_seconds": 2.4})
+        url, kwargs = calls[0]
+        self.assertTrue(url.endswith("/audio/transcriptions"))
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-key")
+        self.assertEqual(kwargs["data"]["model"], settings.GROQ_STT_MODEL)
+        self.assertEqual(kwargs["data"]["language"], "ar")
+        self.assertEqual(kwargs["files"]["file"], ("q.webm", b"audio-bytes", "audio/webm"))
+
+    def test_transcribe_without_key_is_unavailable(self):
+        with mock.patch.object(settings, "GROQ_API_KEY", ""):
+            with self.assertRaises(self.vs.VoiceUnavailableError):
+                self.vs.transcribe(b"x", "q.webm", "audio/webm")
+
+    def test_transcribe_upstream_errors_are_unavailable_and_hide_details(self):
+        for code in (401, 429, 500):
+            with self.subTest(code=code):
+                with mock.patch.object(self.vs, "http_post", return_value=FakeHttpResponse(code, {"error": "secret"})), \
+                        mock.patch.object(settings, "GROQ_API_KEY", "test-key"), \
+                        self.assertLogs("app.services.voice_service", level="WARNING"):
+                    with self.assertRaises(self.vs.VoiceUnavailableError) as ctx:
+                        self.vs.transcribe(b"x", "q.webm", "audio/webm")
+                self.assertNotIn("secret", str(ctx.exception))
+
+    def test_transcribe_network_failure_is_unavailable(self):
+        def boom(url, **kwargs):
+            raise ConnectionError("down")
+
+        with mock.patch.object(self.vs, "http_post", boom), mock.patch.object(settings, "GROQ_API_KEY", "k"), \
+                self.assertLogs("app.services.voice_service", level="WARNING"):
+            with self.assertRaises(self.vs.VoiceUnavailableError):
+                self.vs.transcribe(b"x", "q.webm", "audio/webm")
+
+
+class VoiceApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def setUp(self):
+        from app.services import voice_service
+
+        self.vs = voice_service
+
+    def _upload(self, data=b"audio", content_type="audio/webm", language=None):
+        form = {"language": language} if language else {}
+        return self.client.post(
+            "/api/v1/voice/transcribe", files={"audio": ("q.webm", data, content_type)}, data=form
+        )
+
+    def test_routes_are_registered(self):
+        paths = self.client.get("/openapi.json").json()["paths"]
+        self.assertIn("post", paths["/api/v1/voice/transcribe"])
+        self.assertIn("post", paths["/api/v1/voice/speak"])
+
+    def test_transcribe_returns_text(self):
+        with mock.patch.object(self.vs, "transcribe", return_value={"text": "hi", "language": "english", "duration_seconds": 1.0}) as t:
+            response = self._upload(content_type="audio/webm;codecs=opus", language="en")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"text": "hi", "language": "english", "duration_seconds": 1.0})
+        self.assertEqual(t.call_args.kwargs["language"], "en")
+
+    def test_transcribe_rejects_empty_large_and_non_audio_uploads(self):
+        with mock.patch.object(self.vs, "transcribe") as t:
+            self.assertEqual(self._upload(data=b"").status_code, 400)
+            self.assertEqual(self._upload(data=b"x" * (settings.STT_MAX_BYTES + 1)).status_code, 413)
+            self.assertEqual(self._upload(content_type="text/plain").status_code, 415)
+            self.assertEqual(self._upload(language="fr-xx").status_code, 422)
+        t.assert_not_called()
+
+    def test_transcribe_unavailable_maps_to_503(self):
+        with mock.patch.object(self.vs, "transcribe", side_effect=self.vs.VoiceUnavailableError("Speech recognition is unavailable")):
+            response = self._upload()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "Speech recognition is unavailable")
+
+    def test_speak_returns_mp3_with_chosen_voice(self):
+        async def fake_synth(text, voice):
+            return b"ID3-mp3-bytes"
+
+        with mock.patch.object(self.vs, "synthesize", side_effect=fake_synth) as synth:
+            response = self.client.post("/api/v1/voice/speak", json={"text": "المتغير صندوق"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "audio/mpeg")
+        self.assertEqual(response.content, b"ID3-mp3-bytes")
+        self.assertEqual(response.headers["x-voice"], settings.TTS_VOICE_AR)
+        self.assertEqual(synth.call_args.args, ("المتغير صندوق", settings.TTS_VOICE_AR))
+
+    def test_speak_validates_text(self):
+        self.assertEqual(self.client.post("/api/v1/voice/speak", json={"text": "   "}).status_code, 422)
+        too_long = "a" * (settings.TTS_MAX_CHARS + 1)
+        self.assertEqual(self.client.post("/api/v1/voice/speak", json={"text": too_long}).status_code, 422)
+
+    def test_speak_failure_maps_to_503(self):
+        async def failing(text, voice):
+            raise self.vs.VoiceUnavailableError("Voice playback is unavailable")
+
+        with mock.patch.object(self.vs, "synthesize", side_effect=failing) as synth:
+            response = self.client.post("/api/v1/voice/speak", json={"text": "hello"})
+        self.assertEqual(response.status_code, 503)
+        # Primary and fallback voice were both tried.
+        self.assertEqual([c.args[1] for c in synth.call_args_list], [settings.TTS_VOICE_EN, settings.TTS_VOICE_EN_FALLBACK])
+
+    def test_speak_falls_back_to_second_voice(self):
+        # Live: ar-EG-ShakirNeural returned no audio for ordinary sentences.
+        async def flaky(text, voice):
+            if voice == settings.TTS_VOICE_AR:
+                raise self.vs.VoiceUnavailableError("Voice playback is unavailable")
+            return b"mp3"
+
+        with mock.patch.object(self.vs, "synthesize", side_effect=flaky):
+            response = self.client.post("/api/v1/voice/speak", json={"text": "المتغير صندوق"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["x-voice"], settings.TTS_VOICE_AR_FALLBACK)
+
+    def test_voice_chain_puts_primary_first(self):
+        self.assertEqual(self.vs.voice_chain("مرحبا بك"), [settings.TTS_VOICE_AR, settings.TTS_VOICE_AR_FALLBACK])
+        self.assertEqual(self.vs.voice_chain("hello"), [settings.TTS_VOICE_EN, settings.TTS_VOICE_EN_FALLBACK])
+
+    def test_voice_defaults(self):
+        self.assertEqual(settings.GROQ_STT_MODEL, "whisper-large-v3-turbo")
+        self.assertEqual(settings.TTS_VOICE_AR, "ar-EG-SalmaNeural")
+        self.assertEqual(settings.TTS_VOICE_AR_FALLBACK, "ar-SA-HamedNeural")
+        self.assertEqual(settings.TTS_VOICE_EN, "en-US-AndrewNeural")
+        self.assertEqual(settings.TTS_VOICE_EN_FALLBACK, "en-US-AriaNeural")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

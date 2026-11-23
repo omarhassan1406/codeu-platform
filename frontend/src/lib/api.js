@@ -17,14 +17,15 @@ const FRIENDLY_ERRORS = {
   503: 'The course knowledge base is unreachable right now. Try again shortly.',
 }
 
-async function request(path, { method = 'GET', body, signal } = {}) {
+async function send(path, { method = 'GET', body, form, signal } = {}) {
   let response
   try {
     response = await fetch(`${API_BASE}/api/v1${path}`, {
       method,
       signal,
+      // FormData sets its own multipart Content-Type with the boundary.
       headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
+      body: form ?? (body ? JSON.stringify(body) : undefined),
     })
   } catch (error) {
     if (error.name === 'AbortError') throw error
@@ -32,10 +33,20 @@ async function request(path, { method = 'GET', body, signal } = {}) {
   }
 
   if (!response.ok) {
-    throw new ApiError(FRIENDLY_ERRORS[response.status] ?? 'Something went wrong on our side.', response.status)
+    let detail = null
+    try {
+      detail = (await response.json()).detail
+    } catch {
+      // Non-JSON error body: use the generic message.
+    }
+    // Voice endpoints return learner-safe details; prefer them over generic text.
+    const message = path.startsWith('/voice/') && typeof detail === 'string' ? detail : null
+    throw new ApiError(message ?? FRIENDLY_ERRORS[response.status] ?? 'Something went wrong on our side.', response.status)
   }
-  return response.json()
+  return response
 }
+
+const request = async (path, options) => (await send(path, options)).json()
 
 const enc = encodeURIComponent
 
@@ -57,4 +68,15 @@ export const api = {
       method: 'POST',
       body: { course_title: courseTitle, step_id: stepId, student_question: question },
     }),
+  // Speech-to-text (Groq Whisper). Resolves to { text, language, duration_seconds }.
+  transcribe: (audioBlob, { language, signal } = {}) => {
+    const form = new FormData()
+    const ext = audioBlob.type.includes('mp4') ? 'mp4' : audioBlob.type.includes('ogg') ? 'ogg' : 'webm'
+    form.append('audio', audioBlob, `question.${ext}`)
+    if (language) form.append('language', language)
+    return request('/voice/transcribe', { method: 'POST', form, signal })
+  },
+  // Text-to-speech (edge-tts). Resolves to an MP3 Blob.
+  speak: async (text, { signal } = {}) =>
+    (await send('/voice/speak', { method: 'POST', body: { text }, signal })).blob(),
 }
