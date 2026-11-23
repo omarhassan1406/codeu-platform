@@ -69,6 +69,15 @@ function captionEnds(lines) {
 
 const captionDuration = (line) => Math.max(MIN_CAPTION_MS, line.length * MS_PER_CHAR)
 
+// Why a spoken question was not used (recorder or /voice/transcribe `rejected`).
+export const VOICE_REJECTION_MESSAGES = {
+  silent: 'I didn’t hear anything. Check that the right microphone is on and unmuted, then try again.',
+  too_short: 'That was too short. Tap the mic, ask your question, then tap it again to send.',
+  no_speech: 'I didn’t hear a question, only silence or background noise. Try again closer to the mic.',
+  unsupported_language: 'I can understand questions in Arabic or English. Please try again in one of those.',
+  low_confidence: 'That was hard to make out. Try again more clearly, or type your question.',
+}
+
 /**
  * Professor state machine for one lesson:
  *   idle -> listening (question box open / recording)
@@ -87,6 +96,9 @@ export function useTutor({ courseTitle, stepId }) {
   const [mode, setMode] = useState('timer') // 'timer' | 'audio'
   const [voiceOn, setVoiceOnState] = useState(() => loadJSON('voice', true) !== false)
   const [voiceNotice, setVoiceNotice] = useState(null)
+  // What the professor is busy with: 'transcribing' | 'answering' | 'voice' | null
+  const [activity, setActivity] = useState(null)
+  const [heard, setHeard] = useState(null) // last transcript, shown while answering
   const requestRef = useRef(0)
   const audioRef = useRef(null)
   const audioUrlsRef = useRef(new Map()) // answer text -> object URL, reused by Replay
@@ -118,6 +130,8 @@ export function useTutor({ courseTitle, stepId }) {
     setCaptions([])
     setCaptionIndex(-1)
     setMode('timer')
+    setActivity(null)
+    setHeard(null)
   }
 
   // Ignore answers to questions asked about the previous lesson, and silence it.
@@ -142,6 +156,7 @@ export function useTutor({ courseTitle, stepId }) {
   }, [speaking, mode, captionIndex, captions])
 
   const playCaptionsOnly = useCallback((lines, speakingState, fromIndex = 0) => {
+    setActivity(null)
     setMode('timer')
     setCaptions(lines)
     setCaptionIndex(lines.length ? fromIndex : -1)
@@ -160,6 +175,7 @@ export function useTutor({ courseTitle, stepId }) {
       let url = audioUrlsRef.current.get(text)
       if (!url) {
         setStatus('thinking') // preparing the voice
+        setActivity('voice')
         try {
           url = URL.createObjectURL(await api.speak(lines.join(' ')))
           audioUrlsRef.current.set(text, url)
@@ -192,6 +208,7 @@ export function useTutor({ courseTitle, stepId }) {
       }
 
       setVoiceNotice(null)
+      setActivity(null)
       setMode('audio')
       setCaptions(lines)
       setCaptionIndex(0)
@@ -219,6 +236,7 @@ export function useTutor({ courseTitle, stepId }) {
   const stop = useCallback(() => {
     requestRef.current += 1
     stopAudio()
+    setActivity(null)
     setCaptionIndex(-1)
     setStatus('idle')
   }, [stopAudio])
@@ -230,46 +248,60 @@ export function useTutor({ courseTitle, stepId }) {
       setError(null)
       setCaptionIndex(-1)
       setStatus('thinking')
+      setActivity('answering')
       try {
         const result = await api.raiseHand({ courseTitle, stepId, question })
         if (id !== requestRef.current) return
         const grounded = result.avatar_state !== 'idle'
         setExchange({ question, answer: result.answer_text, grounded, sources: result.context_used ?? [] })
+        setHeard(null)
         await speak(result.answer_text, grounded ? 'explaining' : 'talking', id)
       } catch (err) {
         if (id !== requestRef.current) return
         setError(err.message)
+        setActivity(null)
         setStatus('idle')
       }
     },
     [courseTitle, stepId, speak, stopAudio],
   )
 
+  // A recording the recorder refused to send (silent / too short).
+  const rejectRecording = useCallback((reason) => {
+    setError(VOICE_REJECTION_MESSAGES[reason] ?? VOICE_REJECTION_MESSAGES.no_speech)
+    setActivity(null)
+    setStatus('idle')
+  }, [])
+
   // Spoken question: transcribe, then ask. Resolves to the transcript (or null).
   const askByVoice = useCallback(
     async (audioBlob) => {
       const id = ++requestRef.current
+      stopAudio()
       setError(null)
+      setHeard(null)
       setStatus('thinking')
+      setActivity('transcribing')
       try {
         const result = await api.transcribe(audioBlob)
         if (id !== requestRef.current) return null
         const text = (result.text || '').trim()
-        if (text.length < 2) {
-          setError('I didn’t catch that. Try again, or type your question.')
-          setStatus('idle')
+        if (result.rejected || text.length < 2) {
+          rejectRecording(result.rejected ?? 'no_speech')
           return null
         }
+        setHeard(text)
         ask(text)
         return text
       } catch (err) {
         if (id !== requestRef.current) return null
         setError(err.message)
+        setActivity(null)
         setStatus('idle')
         return null
       }
     },
-    [ask],
+    [ask, rejectRecording, stopAudio],
   )
 
   const replay = useCallback(() => {
@@ -300,11 +332,14 @@ export function useTutor({ courseTitle, stepId }) {
     speaking,
     voiceOn,
     voiceNotice,
+    activity,
+    heard,
     setVoiceOn,
     startListening,
     stop,
     ask,
     askByVoice,
+    rejectRecording,
     replay,
   }
 }

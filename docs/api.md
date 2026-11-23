@@ -147,12 +147,20 @@ up to `STT_MAX_BYTES`, default 5 MB) and optional field `language` (`ar` or
 `en`; omit to auto-detect). Uses Groq Whisper (`GROQ_STT_MODEL`).
 
 ```json
-{"text": "ما هو المتغير في بايثون؟", "language": "Arabic", "duration_seconds": 4.26}
+{"text": "ما هو المتغير في بايثون؟", "language": "Arabic", "duration_seconds": 4.26, "rejected": null}
 ```
 
-- `text` is empty (or punctuation only) when nothing intelligible was heard.
-- `400` empty upload, `413` too large, `415` not audio, `503` Groq unavailable
-  (missing key, rate limited, or down). `detail` is safe to show learners.
+- `rejected` explains an empty `text`: `no_speech` (silence or noise; Whisper
+  invents phrases like "Thank you." for these), `unsupported_language`
+  (neither Arabic nor English), or `low_confidence`. Never send an empty
+  `text` to the tutor.
+- The server names the upload from its content type (Groq needs a real audio
+  extension), so a client filename like `blob` is fine.
+- `400` empty upload or unreadable audio, `413` too large, `415` not audio or
+  unknown format, `503` Groq unavailable (missing key, rate limited, or down).
+  `detail` is safe to show learners.
+- The classroom also measures the mic level while recording and does not
+  upload silent clips.
 
 `POST /voice/speak` with `{"text": "...", "language": "ar" | "en" | null}`
 returns `audio/mpeg` via edge-tts. Send plain text, not Markdown. The voice is

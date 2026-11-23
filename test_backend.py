@@ -1766,13 +1766,60 @@ class VoiceServiceTests(unittest.TestCase):
                 mock.patch.object(settings, "GROQ_API_KEY", "test-key"):
             result = self.vs.transcribe(b"audio-bytes", "q.webm", "audio/webm", language="ar")
 
-        self.assertEqual(result, {"text": "ما هو المتغير؟", "language": "arabic", "duration_seconds": 2.4})
+        self.assertEqual(
+            result, {"text": "ما هو المتغير؟", "language": "arabic", "duration_seconds": 2.4, "rejected": None}
+        )
         url, kwargs = calls[0]
         self.assertTrue(url.endswith("/audio/transcriptions"))
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-key")
         self.assertEqual(kwargs["data"]["model"], settings.GROQ_STT_MODEL)
         self.assertEqual(kwargs["data"]["language"], "ar")
         self.assertEqual(kwargs["files"]["file"], ("q.webm", b"audio-bytes", "audio/webm"))
+
+    def _transcribe_payload(self, payload):
+        with mock.patch.object(self.vs, "http_post", return_value=FakeHttpResponse(200, payload)), \
+                mock.patch.object(settings, "GROQ_API_KEY", "test-key"):
+            return self.vs.transcribe(b"audio", "q.webm", "audio/webm")
+
+    def test_silence_hallucinations_are_rejected(self):
+        # Live: 3s of silence -> " Thank you.", room noise -> " so", a click -> " ."
+        cases = [
+            (" Thank you.", "English", -0.29),
+            (" so", "English", -0.77),
+            (" .", "English", -0.54),
+            (" ترجمة نانسي قنقر", "Arabic", -0.3),
+            ("", "English", -0.1),
+        ]
+        for text, language, logprob in cases:
+            with self.subTest(text=text):
+                result = self._transcribe_payload(
+                    {"text": text, "language": language, "duration": 3.0,
+                     "segments": [{"text": text, "avg_logprob": logprob, "no_speech_prob": 0.0}]}
+                )
+                self.assertEqual(result["text"], "")
+                self.assertEqual(result["rejected"], "no_speech")
+
+    def test_low_confidence_transcript_is_rejected(self):
+        result = self._transcribe_payload(
+            {"text": "variable lists maybe", "language": "English", "duration": 2.0,
+             "segments": [{"text": "variable lists maybe", "avg_logprob": -0.9}]}
+        )
+        self.assertEqual((result["text"], result["rejected"]), ("", "low_confidence"))
+
+    def test_languages_other_than_arabic_and_english_are_rejected(self):
+        # Garbled questions came back tagged as another language.
+        result = self._transcribe_payload(
+            {"text": "これは何ですか", "language": "Japanese", "duration": 2.0,
+             "segments": [{"text": "これは何ですか", "avg_logprob": -0.2}]}
+        )
+        self.assertEqual((result["text"], result["rejected"]), ("", "unsupported_language"))
+
+    def test_confident_speech_is_kept(self):
+        result = self._transcribe_payload(
+            {"text": " ما هو المتغير في بيثون؟", "language": "Arabic", "duration": 4.3,
+             "segments": [{"text": " ما هو المتغير في بيثون؟", "avg_logprob": -0.18, "no_speech_prob": 0.0}]}
+        )
+        self.assertEqual((result["text"], result["rejected"]), ("ما هو المتغير في بيثون؟", None))
 
     def test_transcribe_without_key_is_unavailable(self):
         with mock.patch.object(settings, "GROQ_API_KEY", ""):
@@ -1788,6 +1835,35 @@ class VoiceServiceTests(unittest.TestCase):
                     with self.assertRaises(self.vs.VoiceUnavailableError) as ctx:
                         self.vs.transcribe(b"x", "q.webm", "audio/webm")
                 self.assertNotIn("secret", str(ctx.exception))
+
+    def test_unreadable_audio_is_an_input_error_not_an_outage(self):
+        # Live: Groq answers 400 invalid_media_file / unsupported type for bad files.
+        body = {"error": {"message": "could not process file - is it a valid media file?", "code": "invalid_media_file"}}
+        with mock.patch.object(self.vs, "http_post", return_value=FakeHttpResponse(400, body)), \
+                mock.patch.object(settings, "GROQ_API_KEY", "test-key"), \
+                self.assertLogs("app.services.voice_service", level="WARNING") as logs:
+            with self.assertRaises(self.vs.VoiceInputError):
+                self.vs.transcribe(b"x", "question.webm", "audio/webm")
+        self.assertTrue(any("invalid_media_file" in line for line in logs.output))
+
+    def test_upload_filename_comes_from_content_type(self):
+        # Live: Groq rejects names without an audio extension ("q", "blob").
+        cases = {
+            "audio/webm;codecs=opus": "question.webm",
+            "video/webm": "question.webm",
+            "audio/ogg; codecs=opus": "question.ogg",
+            "audio/mp4": "question.mp4",
+            "audio/x-m4a": "question.m4a",
+            "audio/mpeg": "question.mp3",
+            "audio/wav": "question.wav",
+            "audio/x-wav": "question.wav",
+            "audio/flac": "question.flac",
+        }
+        for content_type, expected in cases.items():
+            with self.subTest(content_type=content_type):
+                self.assertEqual(self.vs.upload_filename(content_type, "blob"), expected)
+        self.assertEqual(self.vs.upload_filename("audio/x-unknown", "clip.opus"), "question.opus")
+        self.assertIsNone(self.vs.upload_filename("audio/x-unknown", "blob"))
 
     def test_transcribe_network_failure_is_unavailable(self):
         def boom(url, **kwargs):
@@ -1821,10 +1897,10 @@ class VoiceApiTests(unittest.TestCase):
         self.assertIn("post", paths["/api/v1/voice/speak"])
 
     def test_transcribe_returns_text(self):
-        with mock.patch.object(self.vs, "transcribe", return_value={"text": "hi", "language": "english", "duration_seconds": 1.0}) as t:
+        with mock.patch.object(self.vs, "transcribe", return_value={"text": "hi", "language": "english", "duration_seconds": 1.0, "rejected": None}) as t:
             response = self._upload(content_type="audio/webm;codecs=opus", language="en")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"text": "hi", "language": "english", "duration_seconds": 1.0})
+        self.assertEqual(response.json(), {"text": "hi", "language": "english", "duration_seconds": 1.0, "rejected": None})
         self.assertEqual(t.call_args.kwargs["language"], "en")
 
     def test_transcribe_rejects_empty_large_and_non_audio_uploads(self):
@@ -1834,6 +1910,26 @@ class VoiceApiTests(unittest.TestCase):
             self.assertEqual(self._upload(content_type="text/plain").status_code, 415)
             self.assertEqual(self._upload(language="fr-xx").status_code, 422)
         t.assert_not_called()
+
+    def test_transcribe_sends_a_named_file_even_for_blob_uploads(self):
+        with mock.patch.object(self.vs, "transcribe", return_value={"text": "hi", "language": "English", "duration_seconds": 1.0, "rejected": None}) as t:
+            response = self.client.post(
+                "/api/v1/voice/transcribe", files={"audio": ("blob", b"audio", "audio/ogg;codecs=opus")}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(t.call_args.args[1], "question.ogg")
+
+    def test_transcribe_unknown_audio_type_without_extension_is_415(self):
+        with mock.patch.object(self.vs, "transcribe") as t:
+            response = self.client.post("/api/v1/voice/transcribe", files={"audio": ("blob", b"audio", "audio/x-unknown")})
+        self.assertEqual(response.status_code, 415)
+        t.assert_not_called()
+
+    def test_unreadable_recording_maps_to_400(self):
+        with mock.patch.object(self.vs, "transcribe", side_effect=self.vs.VoiceInputError("We couldn't read that recording")):
+            response = self._upload()
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "We couldn't read that recording")
 
     def test_transcribe_unavailable_maps_to_503(self):
         with mock.patch.object(self.vs, "transcribe", side_effect=self.vs.VoiceUnavailableError("Speech recognition is unavailable")):

@@ -65,6 +65,49 @@ function SpeakerIcon({ muted }) {
 
 const formatClock = (seconds) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 
+const METER_BARS = 14
+
+// Live input level so learners can see the mic is actually hearing them.
+function MicMeter({ level, seconds, max }) {
+  const lit = Math.round(level * METER_BARS)
+  return (
+    <div className="mt-3 flex items-center gap-3 rounded-lg bg-red-500/10 px-3 py-2" aria-live="polite">
+      <span className="status-pulse h-2 w-2 shrink-0 rounded-full bg-red-400" />
+      <span className="text-[13px] font-semibold text-red-100">
+        Recording {formatClock(seconds)} / {formatClock(max)}
+      </span>
+      <span className="ml-auto flex h-4 items-end gap-[3px]" aria-label={lit ? 'Hearing you' : 'No sound yet'}>
+        {Array.from({ length: METER_BARS }, (_, i) => (
+          <span
+            key={i}
+            className={`w-[3px] rounded-full ${i < lit ? 'bg-red-300' : 'bg-white/15'}`}
+            style={{ height: `${30 + ((i * 37) % 70)}%` }}
+          />
+        ))}
+      </span>
+    </div>
+  )
+}
+
+const ACTIVITY_TEXT = {
+  transcribing: 'Turning your voice into text…',
+  answering: 'Checking the lesson for an answer…',
+  voice: 'Preparing the professor’s voice…',
+}
+
+function ActivityLine({ activity, heard }) {
+  return (
+    <div className="mt-3 space-y-1" aria-live="polite">
+      {heard && (
+        <p dir="auto" className="text-[12.5px] text-slate-300">
+          Heard: <span className="text-white">“{heard}”</span>
+        </p>
+      )}
+      <p className="text-[13px] text-amber-200">{ACTIVITY_TEXT[activity] ?? ACTIVITY_TEXT.answering}</p>
+    </div>
+  )
+}
+
 function CloseIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="h-4 w-4">
@@ -141,12 +184,12 @@ export default function Professor({ tutor, disabled }) {
 
   const toggleRecording = async () => {
     if (recorder.recording) {
-      const blob = await recorder.stop()
+      const { blob, reason } = await recorder.stop()
       if (blob) {
         setQuestion('')
         await tutor.askByVoice(blob)
       } else {
-        tutor.startListening() // accidental tap: keep listening for a typed question
+        tutor.rejectRecording(reason) // silent or accidental tap: say so, never guess
       }
       return
     }
@@ -184,13 +227,15 @@ export default function Professor({ tutor, disabled }) {
                   type="button"
                   onClick={() => tutor.setVoiceOn(!tutor.voiceOn)}
                   aria-pressed={tutor.voiceOn}
-                  aria-label={tutor.voiceOn ? 'Turn the professor’s voice off' : 'Turn the professor’s voice on'}
-                  title={tutor.voiceOn ? 'Voice on' : 'Voice off (captions only)'}
-                  className={`grid h-7 w-7 place-items-center rounded-lg transition hover:bg-white/[0.06] ${
-                    tutor.voiceOn ? 'text-emerald-300' : 'text-slate-500'
+                  aria-label={tutor.voiceOn ? 'Voice on. Turn the professor’s voice off' : 'Voice off. Turn the professor’s voice on'}
+                  className={`flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[12px] font-semibold transition ${
+                    tutor.voiceOn
+                      ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200 hover:bg-emerald-400/20'
+                      : 'border-white/15 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]'
                   }`}
                 >
                   <SpeakerIcon muted={!tutor.voiceOn} />
+                  {tutor.voiceOn ? 'Voice on' : 'Voice off'}
                 </button>
                 <button
                   type="button"
@@ -256,7 +301,17 @@ export default function Professor({ tutor, disabled }) {
               </button>
             </form>
 
-            {busy && <p className="mt-3 text-[13px] text-amber-200">The professor is checking the lesson…</p>}
+            {recorder.recording && <MicMeter level={recorder.level} seconds={recorder.seconds} max={recorder.maxSeconds} />}
+            {busy && <ActivityLine activity={tutor.activity} heard={tutor.heard} />}
+            {tutor.speaking && tutor.voiceOn && !busy && (
+              <p className="mt-3 flex items-center gap-2 text-[13px] text-emerald-200" aria-live="polite">
+                <SpeakerIcon muted={false} />
+                Speaking… press Stop to interrupt.
+              </p>
+            )}
+            {!tutor.voiceOn && tutor.exchange && !busy && (
+              <p className="mt-3 text-[12.5px] text-slate-400">Voice is off, so answers show as captions only.</p>
+            )}
             {recorder.error && (
               <p role="alert" className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-[13px] text-amber-100">
                 {recorder.error}

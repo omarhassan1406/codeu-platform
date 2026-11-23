@@ -13,9 +13,14 @@ ALLOWED_PREFIXES = ("audio/", "video/webm", "video/mp4")
 
 
 class TranscriptionResponse(BaseModel):
-    text: str = Field(description="Empty when nothing intelligible was heard")
+    text: str = Field(description="Empty when nothing usable was heard (see rejected)")
     language: str | None = None
     duration_seconds: float | None = None
+    rejected: Literal["no_speech", "unsupported_language", "low_confidence"] | None = Field(
+        None,
+        description="Why the transcript was discarded: silence/noise (Whisper often invents short phrases "
+        "like 'Thank you.'), a language other than Arabic or English, or a low-confidence guess",
+    )
 
 
 class SpeakRequest(BaseModel):
@@ -41,13 +46,18 @@ def transcribe(
     content_type = (audio.content_type or "").lower()
     if not content_type.startswith(ALLOWED_PREFIXES):
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Upload an audio recording")
+    filename = voice_service.upload_filename(content_type, audio.filename)
+    if filename is None:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Unsupported audio format")
     data = audio.file.read(settings.STT_MAX_BYTES + 1)
     if not data:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "The recording is empty")
     if len(data) > settings.STT_MAX_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "The recording is too long")
     try:
-        result = voice_service.transcribe(data, audio.filename or "question.webm", content_type, language=language)
+        result = voice_service.transcribe(data, filename, content_type, language=language)
+    except voice_service.VoiceInputError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error))
     except voice_service.VoiceUnavailableError as error:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(error))
     return TranscriptionResponse(**result)
